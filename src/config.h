@@ -14,6 +14,8 @@
 #endif
 
 extern bool connected;
+extern bool dimmed;
+extern bool isClockLayoutDrawn;
 
 struct WifiCredential {
     const char* ssid;

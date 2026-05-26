@@ -3,7 +3,7 @@
 #define ARCADE_MANAGER_H
 
 void initArcadeHardware();
-void handleArcadeLogic();
+bool handleArcadeLogic();
 void setButtonLED(int brightness);
 void onDebounceComplete();
 void executeButtonAction();

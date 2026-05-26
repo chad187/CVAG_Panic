@@ -4,6 +4,7 @@
 #include "config.h"
 #include "display_manager.h"
 #include "network_manager.h"
+#include "arcade_manager.h"
 
 Scheduler runner; 
 bool isClockLayoutDrawn = false; 
@@ -11,10 +12,13 @@ bool isClockLayoutDrawn = false;
 // --- NEW STATE TRACKING FOR MAINTENANCE ---
 bool hasRunDailyMaintenance = false;
 bool connected = false;
+bool dimmed = false;
 
 void clockCallback(); 
-void maintenanceCallback(); // Forward declaration for our maintenance runner
+void maintenanceCallback();
 void connectionWatchdogCallback();
+void dimmingCallback();
+void arcadeLogicCallback();
 
 // Tasks: 
 // 1. Clock runs every 1000ms forever
@@ -22,8 +26,20 @@ Task taskUpdateClock(1000, TASK_FOREVER, &clockCallback);
 // 2. Maintenance runs every 5 minutees (300000ms) forever
 Task taskMaintenance(300000, TASK_FOREVER, &maintenanceCallback);
 Task taskNetworkWatchdog(10000, TASK_FOREVER, &connectionWatchdogCallback);
+Task taskDimming(0, TASK_ONCE, &dimmingCallback);
+Task taskArcadeWatcher(20, TASK_FOREVER, &arcadeLogicCallback);
 
-//3. check for a live internet connection
+void arcadeLogicCallback() {
+    if(handleArcadeLogic()) {
+        taskUpdateClock.disable();
+        taskUpdateClock.restartDelayed(10000);
+    }
+}
+
+void dimmingCallback() {
+    Serial.println("dimming");
+    setDimming(7);
+}
 
 void clockCallback() {
     struct tm timeinfo;
@@ -78,7 +94,6 @@ void maintenanceCallback() {
 }
 
 void connectionWatchdogCallback() {
-    Serial.println("[SCHEDULER]: Watchdog task triggered!");
     checkLiveConnection(); // Run the silent hardware validation check
 }
 
@@ -87,6 +102,7 @@ void setup() {
     delay(500);
     
     initDisplay();
+    initArcadeHardware();
     drawHeader("STARTING UP...", TFT_DARKGREY); 
     
     initialWIFI();
@@ -97,11 +113,14 @@ void setup() {
     runner.addTask(taskUpdateClock);
     runner.addTask(taskMaintenance);
     runner.addTask(taskNetworkWatchdog);
+    runner.addTask(taskDimming);
+    runner.addTask(taskArcadeWatcher);
     
     // Start both tasks humming
     taskUpdateClock.enable();
     taskMaintenance.enable();
     taskNetworkWatchdog.enable();
+    taskArcadeWatcher.enable();
     
     Serial.println("System initialized. Multi-tasking maintenance kernel active.");
 }
@@ -109,4 +128,8 @@ void setup() {
 void loop() {
     // Both tasks are tracked and executed asynchronously right here without interfering with each other
     runner.execute();
+    if (!dimmed) {
+        dimmed = true;
+        taskDimming.restartDelayed(10000);
+    }
 }

@@ -31,14 +31,14 @@ void updateStatusArea(const char* status, uint16_t color) {
     tft.drawString(status, 10, 32);
 }
 
-void updateMetricsArea(const char* label, String value, uint16_t color) {
+void updateMetricsArea(const char* label, String value, uint16_t color, int size) {
     tft.fillRect(0, 60, 240, 50, TFT_BLACK);
     tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(1);
+    tft.setTextSize(size);
     tft.drawString(label, 10, 62);
     
     tft.setTextColor(color);
-    tft.setTextSize(2);
+    tft.setTextSize(size+1);
     tft.drawString(value, 10, 80);
 }
 
@@ -82,4 +82,17 @@ void drawMainClockLayout() {
     
     // Draw a subtle horizontal dividing line right under your green header space
     tft.drawFastHLine(0, 26, 240, TFT_DARKGREY);
+}
+
+void setDimming(int percentage) {
+  // Guard the input between 0 and 100
+  percentage = constrain(percentage, 0, 100);
+  
+  // NORMAL LOGIC: 0% percentage = 0 PWM (Black), 100% percentage = 255 PWM (Bright)
+  int dutyCycle = map(percentage, 0, 100, 0, 255);
+  
+  // INVERTED LOGIC: Un-comment this line if 0 makes your screen bright:
+  // int dutyCycle = map(percentage, 0, 100, 255, 0); 
+  
+  ledcWrite(1, dutyCycle);
 }

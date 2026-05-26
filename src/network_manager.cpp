@@ -106,10 +106,10 @@ void initialWIFI() {
     if (success) {
         String displaySpecs = WiFi.SSID() + " | " + WiFi.localIP().toString();
         updateStatusArea("Connected successfully!", TFT_GREEN);
-        updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN);
+        updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN, 1);
     } else {
         updateStatusArea("All Connections Failed", TFT_RED);
-        updateMetricsArea("Network Details:", "OFFLINE", TFT_RED);
+        updateMetricsArea("Network Details:", "OFFLINE", TFT_RED, 1);
     }
 }
 
@@ -131,7 +131,6 @@ void checkLiveConnection() {
     bool internetAccess = Ping.ping(IPAddress(1, 1, 1, 1), 1);
 
     if (internetAccess) {
-        Serial.println("Watchdog: Internet backbone responsive. Link fully active.");
         
         if (!connected) {
             connected = true;
@@ -159,7 +158,7 @@ void performOTAUpdate() {
     // 1. Wipe the screen to give the flashing process an exclusive status window
     clearScreen();
     drawHeader("SYSTEM UPGRADE", TFT_RED);
-    updateMetricsArea("Flash Status:", "Initializing...", TFT_YELLOW);
+    updateMetricsArea("Flash Status:", "Initializing...", TFT_YELLOW, 1);
 
     HTTPClient http;
     http.begin(FIRMWARE_URL);
@@ -168,7 +167,7 @@ void performOTAUpdate() {
     int httpCode = http.GET();
     if (httpCode != HTTP_CODE_OK) {
         Serial.printf("OTA HTTP connection failed. Code: %d\n", httpCode);
-        updateMetricsArea("Flash Status:", "Download Failed", TFT_RED);
+        updateMetricsArea("Flash Status:", "Download Failed", TFT_RED, 1);
         http.end();
         return;
     }
@@ -177,7 +176,7 @@ void performOTAUpdate() {
     int contentLength = http.getSize();
     if (contentLength <= 0) {
         Serial.println("OTA Error: Invalid binary payload size string.");
-        updateMetricsArea("Flash Status:", "Size Invalid", TFT_RED);
+        updateMetricsArea("Flash Status:", "Size Invalid", TFT_RED, 1);
         http.end();
         return;
     }
@@ -187,7 +186,7 @@ void performOTAUpdate() {
     
     if (canBegin) {
         Serial.printf("Flashing script initialized. Payload size: %d bytes. Streaming...\n", contentLength);
-        updateMetricsArea("Flash Status:", "Streaming Binary", TFT_CYAN);
+        updateMetricsArea("Flash Status:", "Streaming Binary", TFT_CYAN, 1);
 
         // Get the active live network stream socket pointer from the chip architecture
         WiFiClient* client = http.getStreamPtr();
@@ -205,22 +204,22 @@ void performOTAUpdate() {
         if (Update.end()) {
             if (Update.isFinished()) {
                 Serial.println("OTA Verification Successful! Rebooting engine now...");
-                updateMetricsArea("Flash Status:", "SUCCESS. REBOOTING", TFT_GREEN);
+                updateMetricsArea("Flash Status:", "SUCCESS. REBOOTING", TFT_GREEN, 1);
                 delay(2000);
                 
                 // Hard reset execution lines on the core silicon hardware level
                 ESP.restart(); 
             } else {
                 Serial.println("OTA Error: Flash verification finished but marked incomplete.");
-                updateMetricsArea("Flash Status:", "Verify Failed", TFT_RED);
+                updateMetricsArea("Flash Status:", "Verify Failed", TFT_RED, 1);
             }
         } else {
             Serial.printf("Flash verification failed. Core Error String: %s\n", Update.errorString());
-            updateMetricsArea("Flash Status:", "Verification Err", TFT_RED);
+            updateMetricsArea("Flash Status:", "Verification Err", TFT_RED, 1);
         }
     } else {
         Serial.println("OTA Error: Not enough storage spaces allocated to accept this file size layout.");
-        updateMetricsArea("Flash Status:", "Partition Error", TFT_RED);
+        updateMetricsArea("Flash Status:", "Partition Error", TFT_RED, 1);
     }
 
     http.end();

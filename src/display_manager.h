@@ -10,9 +10,10 @@ void initDisplay();
 void drawHeader(const char* title, uint16_t bgColor); 
 
 void updateStatusArea(const char* status, uint16_t color);
-void updateMetricsArea(const char* label, String value, uint16_t color);
+void updateMetricsArea(const char* label, String value, uint16_t color, int size);
 void updateLiveClock();
 void clearScreen();
 void drawMainClockLayout();
+void setDimming(int percentage);
 
 #endif
