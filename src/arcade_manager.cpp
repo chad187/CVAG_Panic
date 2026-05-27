@@ -9,6 +9,7 @@
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <base64.h>
+#include <ArduinoJson.h>
 
 // Pin Configuration
 const int BUTTON_PIN = 35;  
@@ -128,7 +129,7 @@ int sendResendEmail(const char* recipientList) {
             
             if (strlen(targetEmail) > 0) {
                 snprintf(payloadBuffer, sizeof(payloadBuffer), 
-                         "{\"from\":\"CVAGLookout@resend.dev\",\"to\":[\"%s\"],\"subject\":\"ALERT!\",\"text\":\"AN INSPECTOR HAS BEEN SIGHTED! \"}", 
+                         "{\"from\":\"CVAGLookout@cvag.com\",\"to\":[\"%s\"],\"subject\":\"ALERT!\",\"text\":\"AN INSPECTOR HAS BEEN SIGHTED! \"}", 
                          targetEmail);
                 
                 snprintf(authHeader, sizeof(authHeader), "Bearer %s", RESEND_API_KEY);
@@ -255,36 +256,76 @@ int sendTwilioSMS(const char* phoneList) {
 // ============================================================================
 void executeButtonAction() {
     Serial.println("\n==================================================");
-    Serial.println("[ACTION]: Launching primary remote trigger script protocol...");
-    Serial.print("[WIFI STATUS]: Checking radio connection profile... ");
-    Serial.println(WiFi.status() == WL_CONNECTED ? "CONNECTED" : "DISCONNECTED");
+    Serial.println("[ACTION]: Fetching dynamic rosters from Google Sheet...");
     Serial.println("==================================================");
     
     setButtonLED(255);
+    
+    String liveEmails = "";
+    String livePhones = "";
+
+    // Adjusted to match your updated macro name: SHEET_ID
+    #ifdef SHEET_ID
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure(); 
+
+        HTTPClient http;
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+        if (http.begin(secureClient, SHEET_ID)) {
+            int httpCode = http.GET();
+            
+            if (httpCode == 200) {
+                String responseBody = http.getString();
+                Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
+
+                // --- ARDUINOJSON V7 SYNTAX CHANGE ---
+                // StaticJsonDocument is removed. We use the unified JsonDocument.
+                JsonDocument doc; 
+                DeserializationError error = deserializeJson(doc, responseBody);
+
+                if (!error) {
+                    // Extracting the data remains simple
+                    liveEmails = doc["emails"].as<String>();
+                    livePhones = doc["phones"].as<String>();
+                    
+                    Serial.print("[ROSTER]: Loaded Emails -> "); Serial.println(liveEmails);
+                    Serial.print("[ROSTER]: Loaded Phones -> "); Serial.println(livePhones);
+                } else {
+                    Serial.print("[ERROR]: JSON structure parse failure: "); Serial.println(error.c_str());
+                }
+            } else {
+                Serial.print("[ERROR]: Failed to read roster. HTTP Code: "); Serial.println(httpCode);
+            }
+            http.end();
+        }
+    #else
+        Serial.println("[ERROR]: Deployment skipped. SHEET_ID macro is missing.");
+    #endif
+
     int totalSuccessfulEmails = 0;
     int totalSuccessfulTexts = 0;
 
-    // 1. Process Emails
-    #ifdef EMAILS
-        totalSuccessfulEmails = sendResendEmail(EMAILS);
-    #endif
+    if (liveEmails.length() > 0) {
+        totalSuccessfulEmails = sendResendEmail(liveEmails.c_str());
+    } else {
+        Serial.println("[WARN]: Email processing skipped. Live target block empty.");
+    }
 
-    // 2. Process SMS Texts
-    #ifdef PHONES
-        totalSuccessfulTexts = sendTwilioSMS(PHONES);
-    #endif
+    if (livePhones.length() > 0) {
+        //totalSuccessfulTexts = sendTwilioSMS(livePhones.c_str()); //just turing it off for now so I don't burn all my credit.
+    } else {
+        Serial.println("[WARN]: SMS processing skipped. Live target block empty.");
+    }
 
-    // UI SCREEN EVALUATION RULE: Paint GREEN if any alert style was successfully dispatched
     if (totalSuccessfulEmails > 0 || totalSuccessfulTexts > 0) {
-        Serial.println("\n[STATUS]: Alert dispatch verified. At least one vector cleared.");
         updateMetricsArea("Broadcast", "SUCCESS", TFT_GREEN, 3);
     } else {
-        Serial.println("\n[STATUS]: Comprehensive alert failure. Zero communication packets escaped.");
         updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
     }
 
     setButtonLED(30); 
-    Serial.println("\n[SUCCESS]: Trigger routine complete. Core loop active.");
+    Serial.println("\n[SUCCESS]: Dynamic run loop completed clean.");
 }
 
 void initArcadeHardware() {
