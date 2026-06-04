@@ -38,20 +38,15 @@ jobs:
           pip install platformio
 
       - name: Generate private_env.ini from secrets
-        env:
-          WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          SHEET_PASSWORD: ${{ secrets.SHEET_PASSWORD }}
         run: |
           cat > private_env.ini << 'EOF'
           [extra_build_flags]
           private_flags = 
-              -D WIFI_PROFILES='${{ env.WIFI_PROFILES }}'
-              -D SHEET_ID="${{ env.SHEET_ID }}"
-              -D SHEET_PASSWORD="${{ env.SHEET_PASSWORD }}"
+              -D WIFI_PROFILES='${{ secrets.WIFI_PROFILES }}'
+              -D SHEET_ID="${{ secrets.SHEET_ID }}"
+              -D SHEET_PASSWORD="${{ secrets.SHEET_PASSWORD }}"
           EOF
-          echo "private_env.ini generated"
-          cat private_env.ini
+          echo "private_env.ini generated successfully"
 
       - name: Build firmware with PlatformIO
         run: |
