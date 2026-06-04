@@ -10,6 +10,7 @@
 #include <WiFiClientSecure.h>
 #include <base64.h>
 #include <ArduinoJson.h>
+#define _TASK_STATUS_REQUEST
 #include <TaskSchedulerDeclarations.h>
 
 // Pin Configuration
@@ -140,22 +141,34 @@ void executeButtonAction() {
                     
                     if (status == "unauthorized") {
                         updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
+                        triggerLedPattern(1000, 127, 2);
                         Serial.println("[CRITICAL]: Google Script rejected our password credential!");
                     } else if (status == "error") {
                         String minsLeft = doc["minutes_remaining"].as<String>();
                         String rateLimitMessage = "Wait " + minsLeft + "m";
+                        triggerLedPattern(1000, 127, 3);
                         updateMetricsArea("Rate Limit", rateLimitMessage.c_str(), TFT_ORANGE, 2);
                     } else if (status == "success") {
                         updateMetricsArea("Broadcast", "SUCCESS", TFT_GREEN, 3);
+                        triggerLedPattern(250, 255, 4);
                         Serial.println("[SUCCESS]: Network queues successfully triggered.");
                     } else {
                         updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
+                        triggerLedPattern(1000, 127, 5);
+                        Serial.println("[FAILURE]: Failed to trigger network queues.");
+                        Serial.println("[DEBUG]: Unrecognized status field in JSON response: " + status);
                     }
                 } else {
                     updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
+                    triggerLedPattern(1000, 127, 6);
+                    Serial.print("[ERROR]: Failed to parse JSON response. Error code: ");
+                    Serial.println(error.c_str());
                 }
             } else {
                 updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
+                triggerLedPattern(1000, 127, 7);
+                Serial.print("[ERROR]: HTTP request failed with code: ");
+                Serial.println(httpCode);
             }
             http.end();
         }

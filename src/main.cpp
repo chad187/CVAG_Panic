@@ -14,6 +14,14 @@ bool hasRunDailyMaintenance = false;
 bool connected = false;
 bool dimmed = false;
 
+// --- GLOBAL VOLATILE CONTROLS ---
+volatile unsigned long blinkIntervalMs = 2000; 
+volatile int blinkMaxIntensity = 180;          
+volatile int targetBlinkCount = -1;            
+
+static int currentBlinkCounter = 0;
+static bool lastWavePhaseWasHigh = false;
+
 void clockCallback(); 
 void maintenanceCallback();
 void connectionWatchdogCallback();
@@ -36,7 +44,7 @@ void dimmingCallback() {
     setDimming(7);
     
     // Start the high-frequency breathing task now that we are idle
-    taskLEDBlink.enable();
+    triggerLedPattern(2500, 120, -1);
 }
 
 void arcadeLogicCallback() {
@@ -51,17 +59,39 @@ void arcadeLogicCallback() {
 }
 
 void ledBlinkCallback() {
-    const unsigned long intervalMs = 2000; // Total time for one full pulse wave cycle
-    const int maxBrightness = 180;          // Maximum peak brightness limit
-    
     unsigned long currentMillis = millis();
 
-    // Calculate our wave position using the current millisecond timeline
-    float angle = (float)(currentMillis % intervalMs) / (float)intervalMs * 2.0 * PI;
+    // Calculate wave position based on current time and interval
+    float angle = (float)(currentMillis % blinkIntervalMs) / (float)blinkIntervalMs * 2.0 * PI;
     float waveIntensity = (sin(angle) + 1.0) / 2.0;
 
-    int dynamicBrightness = (int)(waveIntensity * maxBrightness);
+    int dynamicBrightness = (int)(waveIntensity * blinkMaxIntensity);
     setButtonLED(dynamicBrightness);
+
+    // Count distinct wave crests if tracking a finite limit
+    if (targetBlinkCount > 0) {
+        bool currentPhaseIsHigh = (waveIntensity > 0.5);
+        if (currentPhaseIsHigh && !lastWavePhaseWasHigh) {
+            currentBlinkCounter++;
+            if (currentBlinkCounter >= targetBlinkCount) {
+                taskLEDBlink.disable();
+                setButtonLED(0); // Turn completely off when done
+            }
+        }
+        lastWavePhaseWasHigh = currentPhaseIsHigh;
+    }
+}
+
+// ============================================================================
+// (speedMs: how fast the wave cycles, maxBrightness: how bright the wave gets at its peak, count: how many times to repeat the wave before stopping, -1 for infinite)
+// ============================================================================
+void triggerLedPattern(unsigned long speedMs, int maxBrightness, int count) {
+    blinkIntervalMs = speedMs;
+    blinkMaxIntensity = maxBrightness;
+    targetBlinkCount = count;
+    currentBlinkCounter = 0; 
+    lastWavePhaseWasHigh = false;
+    taskLEDBlink.enable();
 }
 
 void clockCallback() {

@@ -7,5 +7,6 @@ bool handleArcadeLogic();
 void setButtonLED(int brightness);
 void onDebounceComplete();
 void executeButtonAction();
+void triggerLedPattern(unsigned long speedMs, int maxBrightness, int count);
 
 #endif
