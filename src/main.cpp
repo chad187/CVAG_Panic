@@ -19,6 +19,7 @@ void maintenanceCallback();
 void connectionWatchdogCallback();
 void dimmingCallback();
 void arcadeLogicCallback();
+void ledBlinkCallback();
 
 // Tasks: 
 // 1. Clock runs every 1000ms forever
@@ -28,17 +29,39 @@ Task taskMaintenance(300000, TASK_FOREVER, &maintenanceCallback);
 Task taskNetworkWatchdog(10000, TASK_FOREVER, &connectionWatchdogCallback);
 Task taskDimming(0, TASK_ONCE, &dimmingCallback);
 Task taskArcadeWatcher(20, TASK_FOREVER, &arcadeLogicCallback);
+Task taskLEDBlink(20, TASK_FOREVER, &ledBlinkCallback);
+
+void dimmingCallback() {
+    Serial.println("System entered deep idle. Dimming display and starting LED pulse.");
+    setDimming(7);
+    
+    // Start the high-frequency breathing task now that we are idle
+    taskLEDBlink.enable();
+}
 
 void arcadeLogicCallback() {
     if(handleArcadeLogic()) {
+        // --- WAKE UP SEQUENCE ---
+        // Stop the background blinking immediately so it doesn't blink during dispatches
+        
+        // Handle your clock layout delays
         taskUpdateClock.disable();
         taskUpdateClock.restartDelayed(10000);
     }
 }
 
-void dimmingCallback() {
-    Serial.println("dimming");
-    setDimming(7);
+void ledBlinkCallback() {
+    const unsigned long intervalMs = 2000; // Total time for one full pulse wave cycle
+    const int maxBrightness = 180;          // Maximum peak brightness limit
+    
+    unsigned long currentMillis = millis();
+
+    // Calculate our wave position using the current millisecond timeline
+    float angle = (float)(currentMillis % intervalMs) / (float)intervalMs * 2.0 * PI;
+    float waveIntensity = (sin(angle) + 1.0) / 2.0;
+
+    int dynamicBrightness = (int)(waveIntensity * maxBrightness);
+    setButtonLED(dynamicBrightness);
 }
 
 void clockCallback() {
@@ -115,6 +138,7 @@ void setup() {
     runner.addTask(taskNetworkWatchdog);
     runner.addTask(taskDimming);
     runner.addTask(taskArcadeWatcher);
+    runner.addTask(taskLEDBlink);
     
     // Start both tasks humming
     taskUpdateClock.enable();
