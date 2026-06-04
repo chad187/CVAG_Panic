@@ -37,28 +37,25 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
-      - name: Generate private_env.ini from secrets
+      - name: Generate [private_env.ini](http://_vscodecontentref_/6) from secrets
         env:
-          WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
-          SHEET_ID: ${{ secrets.SHEET_ID }}
-          SHEET_PASSWORD: ${{ secrets.SHEET_PASSWORD }}
+            WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
+            SHEET_ID: ${{ secrets.SHEET_ID }}
+            SHEET_PASSWORD: ${{ secrets.SHEET_PASSWORD }}
         run: |
-          python - <<'PY'
-          import os
-
-          w = os.environ["WIFI_PROFILES"]
-          s = os.environ["SHEET_ID"]
-          p = os.environ["SHEET_PASSWORD"]
-
-          with open("private_env.ini", "w") as f:
-              f.write("[extra_build_flags]\n")
-              f.write("private_flags = \n")
-              f.write("    -D WIFI_PROFILES='{}'\n".format(w.replace("'", "\\'")))
-              f.write('    -D SHEET_ID="{}"\n'.format(s.replace('"', '\\"')))
-              f.write('    -D SHEET_PASSWORD="{}"\n'.format(p.replace('"', '\\"')))
-
-          print("private_env.ini generated")
-          PY
+            python - <<'PY'
+            import os
+            w = os.environ.get('WIFI_PROFILES','')
+            s = os.environ.get('SHEET_ID','')
+            p = os.environ.get('SHEET_PASSWORD','')
+            with open('private_env.ini','w') as f:
+                f.write('[extra_build_flags]\n')
+                f.write('private_flags = \n')
+                f.write(f'    -D WIFI_PROFILES={w}\n')
+                f.write(f'    -D SHEET_ID={s}\n')
+                f.write(f'    -D SHEET_PASSWORD={p}\n')
+            print('[private_env.ini](http://_vscodecontentref_/7) generated (verbatim)')
+            PY
 
       - name: Build firmware with PlatformIO
         run: |
