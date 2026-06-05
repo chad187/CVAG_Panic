@@ -122,7 +122,7 @@ void maintenanceCallback() {
 
         if (!connected) {
             Serial.println("System offline at midnight. Forcing a hard network stack rebuild...");
-            tryWiFiConnection(); // Force a hard, blocking 10-second re-scan and reconnection attempt
+            checkLiveConnection(); // Force a hard, blocking 10-second re-scan and reconnection attempt
         } else {
             syncClockWithNTP();
             if (checkForFirmwareUpdates()) { // This now correctly runs your GitHub JSON check
@@ -171,6 +171,11 @@ void setup() {
     drawHeader("STARTING UP...", TFT_DARKGREY); 
     
     initialWIFI();
+    if (connected && checkForFirmwareUpdates()) { // This now correctly runs your GitHub JSON check
+        Serial.println(">>> New firmware validated at boot. Launching installation sequence! <<<");
+        
+        performOTAUpdate(); 
+    }
     
     runner.init();
     

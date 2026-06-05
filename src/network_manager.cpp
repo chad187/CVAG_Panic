@@ -68,123 +68,47 @@ bool checkForFirmwareUpdates() {
     return updateAvailable;
 }
 
-bool tryWiFiConnection() {
-    Serial.println("\nStarting network scan via WiFiMulti...");
+// 1. Define a named type for your state machine layout
+enum NetworkState { 
+    STATE_INITIAL_SCAN, 
+    STATE_TRANSITION, 
+    STATE_HARDWARE_DROP, 
+    STATE_VERIFY_WAN 
+};
+
+// 2. Declare your static tracking instance using that new type
+static NetworkState netState = STATE_INITIAL_SCAN;
+static int currentNetworkIndex = 0;
+static unsigned long connectionTimestamp = 0;
+const unsigned long AUTH_TIMEOUT_MS = 15000; 
+
+// This function now completely blocks startup until true internet is found or it times out
+void initialWIFI() {
+    updateStatusArea("Scanning Networks...", TFT_YELLOW);
+    Serial.println("\n[BOOT]: Initializing blocking network scan via WiFiMulti...");
     
+    // Clear out any stale registration profiles and prime the credentials list
     for (int i = 0; i < NETWORK_COUNT; i++) {
         wifiMulti.addAP(myNetworks[i].ssid, myNetworks[i].password);
     }
-
+    
     int timeoutCounter = 0;
+    // 1. Loop until the hardware registers secure a link layer connection (Max 10 seconds)
     while (wifiMulti.run() != WL_CONNECTED && timeoutCounter < 20) {
         delay(500);
         Serial.print(".");
         timeoutCounter++;
     }
-
-    if (WiFi.status() == WL_CONNECTED) {
-        connected = true; // Set your global tracking variable
-        
-        // Sync Time with Internet registers immediately
-        configTzTime(TZ_INFO, NTP_SERVER);
-        Serial.println("\nWi-Fi connection established. NTP initiated.");
-        Serial.printf("IP Assigned: %s\n", WiFi.localIP().toString().c_str());
-        
-        return true;
-    } else {
-        connected = false;
-        Serial.println("\nAll connection profiles failed to handshake.");
-        return false;
-    }
-}
-
-void initialWIFI() {
-    updateStatusArea("Scanning Networks...", TFT_YELLOW);
     
-    // Call your pure networking function logic
-    bool success = tryWiFiConnection();
-
-    if (success) {
-        String displaySpecs = WiFi.SSID() + " | " + WiFi.localIP().toString();
-        updateStatusArea("Connected successfully!", TFT_GREEN);
-        updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN, 1);
-    } else {
-        updateStatusArea("All Connections Failed", TFT_RED);
-        updateMetricsArea("Network Details:", "OFFLINE", TFT_RED, 1);
-    }
-}
-
-static int currentNetworkIndex = 0;
-static unsigned long connectionTimestamp = 0;
-static bool isTransitioning = false;
-const unsigned long AUTH_TIMEOUT_MS = 15000; // Give the radio a solid 15s to handshake
-
-void checkLiveConnection() {
-    wl_status_t currentStatus = WiFi.status();
-    unsigned long currentMillis = millis();
-
-    // =========================================================================
-    // STATE 1: ACTIVE TRANSITION (Waiting for Hardware Auth & DHCP)
-    // =========================================================================
-    if (isTransitioning) {
-        // If we successfully locked in a hardware connection AND got an IP address
-        if (currentStatus == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-            Serial.printf("\n[WATCHDOG]: Hardware link settled on SSID: %s. Handshake complete!\n", WiFi.SSID().c_str());
-            isTransitioning = false; // Disarm transition armor, hand over to WAN tester
-            connected = true;
-        } 
-        // If we are still shifting channels, check if we've timed out
-        else if (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS) {
-            currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
-            Serial.printf("\n[WATCHDOG]: Handshake timeout on profile %d. Cycling to: %s\n", 
-                          currentNetworkIndex, myNetworks[currentNetworkIndex].ssid);
-            
-            WiFi.disconnect(true, true);
-            WiFi.mode(WIFI_OFF);
-            delay(100); 
-            
-            WiFi.mode(WIFI_STA);
-            delay(50);
-            WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
-            
-            connectionTimestamp = currentMillis; // Reset the timeout clock for the new profile
-        } 
-        else {
-            Serial.printf("[WATCHDOG]: Awaiting connection lease for '%s'... (%dms elapsed)\n", 
-                          myNetworks[currentNetworkIndex].ssid, (int)(currentMillis - connectionTimestamp));
-        }
+    // 2. Hardware link is up! Now immediately verify if it has a real WAN route to the internet
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        Serial.println("\n[BOOT]: Hardware link settled. Testing upstream internet access...");
         
-        // CRITICAL CRITICAL CRITICAL: Absolute hard exit. 
-        // Do not let ANY other network logic or ping tests fire while transitioning!
-        return; 
-    }
-
-    // =========================================================================
-    // STATE 2: UNEXPECTED HARDWARE DROP (Out-of-band link loss)
-    // =========================================================================
-    if (currentStatus != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
-        if (connected) { connected = false; }
-        
-        Serial.printf("\n[WATCHDOG]: Connection lost. Re-bootstrapping active profile: %s\n", myNetworks[currentNetworkIndex].ssid);
-        WiFi.mode(WIFI_STA);
-        delay(50);
-        WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
-        
-        connectionTimestamp = currentMillis;
-        isTransitioning = true;
-        return;
-    }
-
-    // =========================================================================
-    // STATE 3: STABLE CONNECTION -> VERIFY UPSTREAM WAN INTERNET ACCESS
-    // =========================================================================
-    bool internetAccess = Ping.ping(IPAddress(1, 1, 1, 1), 1);
-
-    if (internetAccess) {
-        if (!connected) {
-            connected = true;
+        if (Ping.ping(IPAddress(1, 1, 1, 1), 1)) {
+            connected = true; // Sets your global tracking variable TRUE before returning!
+            configTzTime(TZ_INFO, NTP_SERVER); // Sync clock parameters immediately
             
-            // Sync our tracker index with wherever WiFiMulti landed on startup
+            // Sync your array tracking index to reality based on where WiFiMulti landed
             String activeSSID = WiFi.SSID();
             for (int i = 0; i < NETWORK_COUNT; i++) {
                 if (activeSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
@@ -192,39 +116,186 @@ void checkLiveConnection() {
                     break;
                 }
             }
-            Serial.printf("\n[WATCHDOG]: Internet ACTIVE on SSID: %s (Index: %d | IP: %s)\n", 
+            
+            // Transition our background watchdog state machine straight to stable heartbeat mode
+            netState = STATE_VERIFY_WAN; 
+            
+            String displaySpecs = WiFi.SSID() + " | " + WiFi.localIP().toString();
+            updateStatusArea("Connected successfully!", TFT_GREEN);
+            updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN, 1);
+            Serial.printf("[BOOT SUCCESS]: Internet ACTIVE on SSID: %s (Index: %d | IP: %s)\n", 
                           WiFi.SSID().c_str(), currentNetworkIndex, WiFi.localIP().toString().c_str());
+            return;
         }
-    } 
-    else {
-        // UPSTREAM WAN IS DEAD
-        if (connected) { connected = false; }
-        
-        String deadSSID = WiFi.SSID();
-        Serial.printf("\n[WARNING]: SSID '%s' has no upstream WAN internet access.\n", deadSSID.c_str());
-        
-        // Sync our tracking position to reality before shifting
-        for (int i = 0; i < NETWORK_COUNT; i++) {
-            if (deadSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
-                currentNetworkIndex = i;
-                break;
-            }
+    }
+    
+    // Fallback if the hardware connected but the internet was completely dead
+    connected = false;
+    netState = STATE_TRANSITION; // Tell the background watchdog to immediately start cycling channels
+    Serial.println("\n[BOOT WARNING]: Hardware linked, but WAN internet ping failed. Booting into offline mode.");
+    updateStatusArea("All Connections Failed", TFT_RED);
+    updateMetricsArea("Network Details:", "OFFLINE", TFT_RED, 1);
+}
+
+bool waitForNtpSync(uint32_t timeoutMs) {
+    Serial.print("[NTP]: Awaiting synchronization packet");
+    uint32_t startAttempt = millis();
+    struct tm timeinfo;
+    
+    while (millis() - startAttempt < timeoutMs) {
+        // Check if the system clock registers have a valid year yet (anything past 1970 means synced!)
+        if (getLocalTime(&timeinfo, 0)) { 
+            Serial.println("\n[NTP SUCCESS]: Internal hardware clock synchronized!");
+            return true;
         }
-
-        // Increment to the next fallback profile cleanly
-        currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
-        Serial.printf("[WATCHDOG]: Routing away from dead link -> Fallback profile: %s\n", myNetworks[currentNetworkIndex].ssid);
-
-        WiFi.disconnect(true, true);
-        WiFi.mode(WIFI_OFF);
         delay(100);
+        Serial.print(".");
+    }
+    Serial.println("\n[NTP ERROR]: Synchronization timed out. System clock fallback active.");
+    return false;
+}
+
+void checkLiveConnection() {
+    wl_status_t currentStatus = WiFi.status();
+    unsigned long currentMillis = millis();
+
+    switch (netState) {
         
-        WiFi.mode(WIFI_STA);
-        delay(50);
-        WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
-        
-        connectionTimestamp = currentMillis;
-        isTransitioning = true; // Lock down transition armor
+        // =========================================================================
+        // STATE 0: INITIAL BOOT SCAN (Asynchronous entry verification)
+        // =========================================================================
+        case STATE_INITIAL_SCAN: {
+            if (wifiMulti.run() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+                if (Ping.ping(IPAddress(1, 1, 1, 1), 1)) {
+                    configTzTime(TZ_INFO, NTP_SERVER); 
+                    waitForNtpSync(3000);
+                    
+                    connected = true;
+                    String activeSSID = WiFi.SSID();
+                    for (int i = 0; i < NETWORK_COUNT; i++) {
+                        if (activeSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
+                            currentNetworkIndex = i;
+                            break;
+                        }
+                    }
+                    
+                    netState = STATE_VERIFY_WAN;
+                    
+                    String displaySpecs = WiFi.SSID() + " | " + WiFi.localIP().toString();
+                    updateStatusArea("Connected successfully!", TFT_GREEN);
+                    updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN, 1);
+                    isClockLayoutDrawn = false;
+                    Serial.printf("\n[WATCHDOG]: Initial Scan Settled on SSID: %s\n", WiFi.SSID().c_str());
+                }
+            }
+            
+            if (!connected && (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS)) {
+                Serial.println("\n[WATCHDOG]: Initial multi-scan failed to verify WAN. Dropping into active profile rotation...");
+                netState = STATE_TRANSITION;
+                connectionTimestamp = currentMillis;
+                // Prime the first profile change instantly
+                WiFi.disconnect(true, true);
+                WiFi.mode(WIFI_STA);
+                delay(50);
+                WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+            }
+            break;
+        }
+
+        // =========================================================================
+        // STATE 1: ACTIVE TRANSITION & SCAN CYCLING (Enforces profile rotations)
+        // =========================================================================
+        case STATE_TRANSITION: {
+            Serial.printf("[WATCHDOG-PROBE]: Testing Profile %d [%s] -> Status Code: %d\n", 
+                          currentNetworkIndex, myNetworks[currentNetworkIndex].ssid, currentStatus);
+            
+            // If the hardware link is secured, test for true WAN internet right now
+            if (currentStatus == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+                Serial.printf("[WATCHDOG-PROBE]: Hardware link established for '%s'. Verifying WAN router route...\n", WiFi.SSID().c_str());
+                
+                if (Ping.ping(IPAddress(1, 1, 1, 1), 1)) {
+                    Serial.printf("\n[WATCHDOG SUCCESS]: Upstream WAN verified on profile: %s. Handshake complete!\n", WiFi.SSID().c_str());
+                    
+                    configTzTime(TZ_INFO, NTP_SERVER); 
+                    waitForNtpSync(3000); 
+                    
+                    connected = true;
+                    netState = STATE_VERIFY_WAN;
+                    
+                    String displaySpecs = WiFi.SSID() + " | " + WiFi.localIP().toString();
+                    updateStatusArea("Connected successfully!", TFT_GREEN);
+                    updateMetricsArea("Network Details:", displaySpecs, TFT_GREEN, 1);
+                    isClockLayoutDrawn = false;
+                    return;
+                } else {
+                    Serial.println("[WATCHDOG WARNING]: Router connected, but WAN interface is dead. Forcing early channel rotation.");
+                }
+            } 
+            
+            // Check if we have spent too much time waiting for this specific profile to negotiate an IP address
+            if (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS || currentStatus == WL_CONNECT_FAILED) {
+                // Increment to the next fallback credential block safely
+                currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
+                Serial.printf("\n[WATCHDOG]: Profile failed or timed out. Rotating tracking index to slot %d: -> Next target: %s\n", 
+                              currentNetworkIndex, myNetworks[currentNetworkIndex].ssid);
+                
+                // Update screen to explicitly show exactly what network it is fighting to connect to
+                updateStatusArea("Cycling Profile...", TFT_YELLOW);
+                updateMetricsArea("Targeting AP:", myNetworks[currentNetworkIndex].ssid, TFT_YELLOW, 1);
+
+                WiFi.disconnect(true, true);
+                WiFi.mode(WIFI_OFF);
+                delay(100); 
+                
+                WiFi.mode(WIFI_STA);
+                delay(50);
+                WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+                connectionTimestamp = currentMillis; // Reset timeout clock for the fresh profile target
+            }
+            break;
+        }
+
+        // =========================================================================
+        // STATE 2: UNEXPECTED HARDWARE DROP
+        // =========================================================================
+        case STATE_HARDWARE_DROP: {
+            connected = false;
+            Serial.printf("\n[WATCHDOG]: Critical drop detected. Forcing hardware stack reset for profile: %s\n", myNetworks[currentNetworkIndex].ssid);
+            
+            updateStatusArea("Link Lost", TFT_RED);
+            updateMetricsArea("Network Details:", "RECONNECTING", TFT_RED, 1);
+
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+            delay(100);
+
+            WiFi.mode(WIFI_STA);
+            delay(50);
+            WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+            
+            connectionTimestamp = currentMillis;
+            netState = STATE_TRANSITION;
+            break;
+        }
+
+        // =========================================================================
+        // STATE 3: STABLE RUNTIME HEARTBEAT VERIFICATION
+        // =========================================================================
+        case STATE_VERIFY_WAN: {
+            if (currentStatus != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+                netState = STATE_HARDWARE_DROP;
+                return;
+            }
+
+            if (Ping.ping(IPAddress(1, 1, 1, 1), 1)) {
+                Serial.printf("[WATCHDOG]: Heartbeat verified. WAN link active on '%s'\n", WiFi.SSID().c_str());
+            } 
+            else {
+                Serial.printf("\n[WARNING]: Running connection '%s' lost its upstream WAN gateway internet access.\n", WiFi.SSID().c_str());
+                netState = STATE_HARDWARE_DROP; // Divert into recovery mode to rotate channels immediately
+            }
+            break;
+        }
     }
 }
 

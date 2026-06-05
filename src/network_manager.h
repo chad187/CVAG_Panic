@@ -3,7 +3,6 @@
 #define NETWORK_MANAGER_H
 
 void initialWIFI();
-bool tryWiFiConnection();
 void syncClockWithNTP();
 bool checkForFirmwareUpdates();
 void performOTAUpdate();
