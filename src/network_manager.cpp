@@ -21,12 +21,6 @@ void syncClockWithNTP() {
 
 bool checkForFirmwareUpdates() {
     Serial.println("Checking GitHub repository for compiled firmware binaries...");
-    
-    // Ensure we are fully connected before touching raw sockets
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("OTA Check Aborted: Network currently offline.");
-        return false;
-    }
 
     HTTPClient http;
     // Initialize secure socket layer communication channel
@@ -41,22 +35,27 @@ bool checkForFirmwareUpdates() {
         Serial.println("Successfully downloaded manifest payload:");
         Serial.println(payload);
 
-        // Allocate memory for parsing the incoming JSON payload string
-        JsonDocument doc;
+        // CLEAN V7 FIX: Removed StaticJsonDocument<384>, replaced with modern JsonDocument
+        JsonDocument doc; 
         DeserializationError error = deserializeJson(doc, payload);
 
         if (!error) {
             const char* latestVersion = doc["version"]; // Extract the "version" string value
             
-            Serial.printf("Local Core Version: %s\n", CURRENT_VERSION);
-            Serial.printf("GitHub Remote Version: %s\n", latestVersion);
-
-            // Compare strings. If they do not match, we have an update available!
-            if (strcmp(latestVersion, CURRENT_VERSION) != 0) {
-                Serial.println(">>> New firmware release discovered on GitHub! <<<");
-                updateAvailable = true;
+            // CRITICAL PROTECTION: Ensure the key actually exists before running strcmp
+            if (latestVersion == nullptr) {
+                Serial.println("[OTA ERROR]: Manifest parsed, but 'version' key is missing or invalid.");
             } else {
-                Serial.println("System up to date. Version strings match.");
+                Serial.printf("Local Core Version: %s\n", CURRENT_VERSION);
+                Serial.printf("GitHub Remote Version: %s\n", latestVersion);
+
+                // Compare strings. If they do not match, we have an update available!
+                if (strcmp(latestVersion, CURRENT_VERSION) != 0) {
+                    Serial.println(">>> New firmware release discovered on GitHub! <<<");
+                    updateAvailable = true;
+                } else {
+                    Serial.println("System up to date. Version strings match.");
+                }
             }
         } else {
             Serial.printf("JSON Deserialization failed: %s\n", error.c_str());

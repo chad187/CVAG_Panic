@@ -8,6 +8,10 @@ on:
     branches:
       - release
 
+# This forces the runner engine to use Node 24 and eliminates the warnings completely
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
 jobs:
   build:
     name: Build Firmware
@@ -18,7 +22,7 @@ jobs:
     
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v4 # Uses latest minor patch supporting Node 24 automatically
 
       - name: Read version from version.json
         id: read-version
@@ -28,7 +32,7 @@ jobs:
           echo "Version: $VERSION"
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5 # Upgraded from v4 to v5 for native Node 24 support
         with:
           python-version: '3.11'
 
@@ -37,7 +41,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
-      - name: Generate [private_env.ini](http://_vscodecontentref_/6) from secrets
+      - name: Generate private_env.ini from secrets
         env:
             WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
             SHEET_ID: ${{ secrets.SHEET_ID }}
@@ -54,7 +58,7 @@ jobs:
                 f.write(f'    -D WIFI_PROFILES={w}\n')
                 f.write(f'    -D SHEET_ID={s}\n')
                 f.write(f'    -D SHEET_PASSWORD={p}\n')
-            print('[private_env.ini](http://_vscodecontentref_/7) generated (verbatim)')
+            print('private_env.ini generated (verbatim)')
             PY
 
       - name: Build firmware with PlatformIO
@@ -76,6 +80,7 @@ jobs:
 
       - name: Upload firmware as artifact
         uses: actions/upload-artifact@v4
+
         with:
           name: firmware-${{ steps.read-version.outputs.version }}
           path: .pio/build/lilygo-t-display/firmware.bin
@@ -108,23 +113,26 @@ jobs:
           fi
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
+        uses: actions/github-script@v7 # Changed to the official, secure action to avoid legacy Node 20 triggers
         with:
-          tag_name: v${{ needs.build.outputs.version }}
-          name: Firmware Release v${{ needs.build.outputs.version }}
-          body: |
-            Automated firmware release build
+          script: |
+            const fs = require('fs');
+            const release = await github.rest.repos.createRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              tag_name: `v${{ needs.build.outputs.version }}`,
+              name: `Firmware Release v${{ needs.build.outputs.version }}`,
+              body: `Automated firmware release build\n\n**Build Information:**\n- Commit: ${context.sha}\n- Run ID: ${context.runId}`,
+              draft: false,
+              prerelease: false
+            });
             
-            **Build Information:**
-            - Commit: ${{ github.sha }}
-            - Ref: ${{ github.ref }}
-            - Run ID: ${{ github.run_id }}
-            
-            **Assets:**
-            - `firmware.bin` - ESP32 firmware binary (ready for OTA update)
-          files: |
-            ./firmware-artifact/firmware.bin
-          draft: false
-          prerelease: false
+            await github.rest.repos.uploadReleaseAsset({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              release_id: release.data.id,
+              name: 'firmware.bin',
+              data: fs.readFileSync('./firmware-artifact/firmware.bin')
+            });
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
