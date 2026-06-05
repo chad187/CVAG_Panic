@@ -12,6 +12,8 @@
 
 WiFiMulti wifiMulti;
 
+static const char* activeBlacklistedSSID = nullptr;
+
 void syncClockWithNTP() {
     Serial.println("Synchronizing clock with NTP server to counter drift...");
     configTzTime(TZ_INFO, NTP_SERVER);
@@ -113,42 +115,117 @@ void initialWIFI() {
     }
 }
 
-const IPAddress INTERNET_TARGET(1, 1, 1, 1);
+static int currentNetworkIndex = 0;
+static unsigned long connectionTimestamp = 0;
+static bool isTransitioning = false;
+const unsigned long AUTH_TIMEOUT_MS = 15000; // Give the radio a solid 15s to handshake
 
 void checkLiveConnection() {
-    // 1. If the hardware radio itself knows it is disconnected, don't waste time pinging
-    if (WiFi.status() != WL_CONNECTED) {
-        if (connected) {
-            connected = false;
-            Serial.println("\n[WATCHDOG]: Hardware radio disconnect flagged.");
+    wl_status_t currentStatus = WiFi.status();
+    unsigned long currentMillis = millis();
+
+    // =========================================================================
+    // STATE 1: ACTIVE TRANSITION (Waiting for Hardware Auth & DHCP)
+    // =========================================================================
+    if (isTransitioning) {
+        // If we successfully locked in a hardware connection AND got an IP address
+        if (currentStatus == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+            Serial.printf("\n[WATCHDOG]: Hardware link settled on SSID: %s. Handshake complete!\n", WiFi.SSID().c_str());
+            isTransitioning = false; // Disarm transition armor, hand over to WAN tester
+            connected = true;
+        } 
+        // If we are still shifting channels, check if we've timed out
+        else if (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS) {
+            currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
+            Serial.printf("\n[WATCHDOG]: Handshake timeout on profile %d. Cycling to: %s\n", 
+                          currentNetworkIndex, myNetworks[currentNetworkIndex].ssid);
+            
+            WiFi.disconnect(true, true);
+            WiFi.mode(WIFI_OFF);
+            delay(100); 
+            
+            WiFi.mode(WIFI_STA);
+            delay(50);
+            WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+            
+            connectionTimestamp = currentMillis; // Reset the timeout clock for the new profile
+        } 
+        else {
+            Serial.printf("[WATCHDOG]: Awaiting connection lease for '%s'... (%dms elapsed)\n", 
+                          myNetworks[currentNetworkIndex].ssid, (int)(currentMillis - connectionTimestamp));
         }
-        wifiMulti.run(); 
+        
+        // CRITICAL CRITICAL CRITICAL: Absolute hard exit. 
+        // Do not let ANY other network logic or ping tests fire while transitioning!
+        return; 
+    }
+
+    // =========================================================================
+    // STATE 2: UNEXPECTED HARDWARE DROP (Out-of-band link loss)
+    // =========================================================================
+    if (currentStatus != WL_CONNECTED || WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+        if (connected) { connected = false; }
+        
+        Serial.printf("\n[WATCHDOG]: Connection lost. Re-bootstrapping active profile: %s\n", myNetworks[currentNetworkIndex].ssid);
+        WiFi.mode(WIFI_STA);
+        delay(50);
+        WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+        
+        connectionTimestamp = currentMillis;
+        isTransitioning = true;
         return;
     }
 
-    // 2. Radio claims it's connected, now test actual WAN internet access
-    // We send 1 single ping packet to Cloudflare DNS (1.1.1.1)
+    // =========================================================================
+    // STATE 3: STABLE CONNECTION -> VERIFY UPSTREAM WAN INTERNET ACCESS
+    // =========================================================================
     bool internetAccess = Ping.ping(IPAddress(1, 1, 1, 1), 1);
 
     if (internetAccess) {
-        
         if (!connected) {
             connected = true;
-            Serial.println("[WATCHDOG]: Global internet connectivity restored!");
+            
+            // Sync our tracker index with wherever WiFiMulti landed on startup
+            String activeSSID = WiFi.SSID();
+            for (int i = 0; i < NETWORK_COUNT; i++) {
+                if (activeSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
+                    currentNetworkIndex = i;
+                    break;
+                }
+            }
+            Serial.printf("\n[WATCHDOG]: Internet ACTIVE on SSID: %s (Index: %d | IP: %s)\n", 
+                          WiFi.SSID().c_str(), currentNetworkIndex, WiFi.localIP().toString().c_str());
         }
     } 
     else {
-        // The router didn't forward our packet — we are outside range or the internet is dead
-        if (connected) {
-            connected = false; // Flags your UI header to turn RED instantly
-            Serial.println("\n[WARNING]: WAN Target unreachable! Internet link dropped.");
-            
-            // Kill the zombie radio state completely to clear out the driver cache
-            WiFi.disconnect(); 
-        }
+        // UPSTREAM WAN IS DEAD
+        if (connected) { connected = false; }
         
-        // Command WiFiMulti to sweep and try to secure a fresh connection
-        wifiMulti.run();
+        String deadSSID = WiFi.SSID();
+        Serial.printf("\n[WARNING]: SSID '%s' has no upstream WAN internet access.\n", deadSSID.c_str());
+        
+        // Sync our tracking position to reality before shifting
+        for (int i = 0; i < NETWORK_COUNT; i++) {
+            if (deadSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
+                currentNetworkIndex = i;
+                break;
+            }
+        }
+
+        // Increment to the next fallback profile cleanly
+        currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
+        Serial.printf("[WATCHDOG]: Routing away from dead link -> Fallback profile: %s\n", myNetworks[currentNetworkIndex].ssid);
+
+        WiFi.disconnect(true, true);
+        WiFi.mode(WIFI_OFF);
+        delay(100);
+        
+        WiFi.mode(WIFI_STA);
+        delay(50);
+        WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+        
+        connectionTimestamp = currentMillis;
+        isTransitioning = true; // Lock down transition armor
     }
 }
 
