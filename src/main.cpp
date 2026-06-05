@@ -117,6 +117,7 @@ void maintenanceCallback() {
     }
 
     if (timeinfo.tm_hour == 0 && !hasRunDailyMaintenance) {
+    //if (true) {
         Serial.println("Midnight window detected. Starting daily system maintenance...");
 
         if (!connected) {
@@ -124,15 +125,26 @@ void maintenanceCallback() {
             tryWiFiConnection(); // Force a hard, blocking 10-second re-scan and reconnection attempt
         } else {
             syncClockWithNTP();
-            bool updateAvailable = checkForFirmwareUpdates();
-        
-            if (updateAvailable) {
-                // If a mismatch is discovered, completely stop all scheduler clocks 
-                // and initiate the critical chip flashing sequence immediately.
+            if (checkForFirmwareUpdates()) { // This now correctly runs your GitHub JSON check
+                Serial.println("Critical updates validated. Suspending app threads for storage modifications...");
+                
+                // Suspend operations for flash stability
                 taskUpdateClock.disable();
                 taskMaintenance.disable();
                 
                 performOTAUpdate(); 
+                
+                // =============================================================
+                // FALLBACK PROTECTION: Execution only hits this line if OTA failed!
+                // =============================================================
+                Serial.println("[RECOVERY]: Flash installation failed or timed out. Restoring system lifelines...");
+                
+                taskUpdateClock.enable();
+                taskMaintenance.enable();
+                
+                // Tell the rendering engine the layout was wiped so it redraws your clock UI
+                isClockLayoutDrawn = false; 
+                clearScreen();
             }
         }
         

@@ -2,7 +2,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define CURRENT_VERSION "1.0.0"
+#define CURRENT_VERSION "1.0.2"
 
 // Global Time Server Parameters
 #define NTP_SERVER "pool.ntp.org"
@@ -29,7 +29,7 @@ const WifiCredential myNetworks[] = {
 const int NETWORK_COUNT = sizeof(myNetworks) / sizeof(myNetworks[0]);
 
 // The raw URL pointing to your repository's version tracking manifest file
-#define CONFIG_URL "https://raw.githubusercontent.com/chad187/CVAG_Panic/main/version.json"
+#define CONFIG_URL "https://raw.githubusercontent.com/chad187/CVAG_Panic/release/version.json"
 
 // The direct asset link where your compiled firmware binary will sit inside GitHub Releases
 #define FIRMWARE_URL "https://github.com/chad187/CVAG_Panic/releases/latest/download/firmware.bin"
