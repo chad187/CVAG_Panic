@@ -2,7 +2,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define CURRENT_VERSION "1.0.2"
+#define CURRENT_VERSION "1.0.3"
 
 // Global Time Server Parameters
 #define NTP_SERVER "pool.ntp.org"
