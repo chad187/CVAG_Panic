@@ -1,3 +1,9 @@
+example secret: 
+WIFI_PROFILES='{"SSID1", "pw1"}, {"ssid2", "pw2"}'
+""\"htts://googleaddress/exec\"""
+""\"password\"""
+
+
 The 2N7000 Pinout (Flat side facing you)Left 
 Pin (1): Source(L) Connect to T-Display GND Middle 
 Pin (2): Gate(M) Connect to T-Display GPIO 26 Right 
