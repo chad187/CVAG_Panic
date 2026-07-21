@@ -15,6 +15,7 @@
 
 // Pin Configuration
 const int BUTTON_PIN = 26;  
+const int ALT_BUTTON_PIN = 35;
 const int LED_PIN = 27;
 extern Task taskLEDBlink;
 
@@ -23,6 +24,16 @@ bool lastButtonState = HIGH;
 bool currentButtonState = HIGH;   
 unsigned long lastDebounceTime = 0;  
 const unsigned long DEBOUNCE_DELAY = 50; 
+
+bool lastAltButtonState = HIGH;
+bool currentAltButtonState = HIGH;
+unsigned long lastAltDebounceTime = 0;
+const unsigned long ALT_DEBOUNCE_DELAY = 50;
+
+// Double-tap confirmation flow
+bool doubleTapPending = false;
+unsigned long doubleTapArmTime = 0;
+const unsigned long DOUBLE_TAP_WINDOW_MS = 5000;
 
 // Connection Pooling Engine
 #define MAX_ASYNC_REQUESTS 10
@@ -65,7 +76,7 @@ void onAsyncRequestComplete(void* optParm, AsyncHTTPRequest* request, int readyS
             Serial.print("]: "); Serial.println(responseBody);
         }
         
-        if (responseCode < 200 || responseCode >= 300) {
+        if (responseCode < 200 || (responseCode >= 300 && (responseCode < 301 || responseCode > 308))) {
             dispatchHasFailed = true;
             Serial.print("[ERROR]: Pool slot #"); Serial.print(poolId);
             Serial.println(" caught an invalid execution signal response.");
@@ -129,7 +140,7 @@ void executeButtonAction() {
         if (http.begin(secureClient, secureUrl)) {
             int httpCode = http.GET();
             
-            if (httpCode == 200) {
+            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
                 String responseBody = http.getString();
                 Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
 
@@ -179,14 +190,83 @@ void executeButtonAction() {
 
 }
 
+void executeTestButtonAction() {
+    Serial.println("\n==================================================");
+    Serial.println("[ACTION]: Launching Test Request...");
+    Serial.println("==================================================");
+
+    updateMetricsArea("Testing...", "TEST", TFT_BLUE, 2);
+
+    #if defined(SHEET_ID) && defined(SHEET_PASSWORD)
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure();
+
+        HTTPClient http;
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+
+        String testUrl = String(SHEET_ID) + "?password=" + String(SHEET_PASSWORD) + "&mode=test";
+
+        if (http.begin(secureClient, testUrl)) {
+            int httpCode = http.GET();
+
+            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
+                String responseBody = http.getString();
+                Serial.print("[TEST DATA]: Received Payload: "); Serial.println(responseBody);
+                updateMetricsArea("Test", "OK", TFT_GREEN, 3);
+                triggerLedPattern(1000, 127, 6);
+            } else {
+                updateMetricsArea("Test", "FAIL", TFT_RED, 3);
+                triggerLedPattern(3000, 127, 2);
+                Serial.print("[ERROR]: Test request failed with code: ");
+                Serial.println(httpCode);
+            }
+            http.end();
+        }
+    #else
+        Serial.println("[ERROR]: SHEET_ID or SHEET_PASSWORD macro configuration missing.");
+        updateMetricsArea("Test", "FAIL", TFT_RED, 3);
+    #endif
+}
+
 void initArcadeHardware() {
     pinMode(BUTTON_PIN, INPUT_PULLUP); 
+    pinMode(ALT_BUTTON_PIN, INPUT_PULLUP);
     ledcSetup(0, 5000, 8);         
     ledcAttachPin(LED_PIN, 0);      
 }
 
 bool handleArcadeLogic() {
     bool reading = digitalRead(BUTTON_PIN);
+
+    if (doubleTapPending && (millis() - doubleTapArmTime) > DOUBLE_TAP_WINDOW_MS) {
+        Serial.println("[HARDWARE]: Double-tap confirmation timed out.");
+        doubleTapPending = false;
+        updateMetricsArea("Broadcast", "READY", TFT_BLUE, 3);
+    }
+
+    bool altReading = digitalRead(ALT_BUTTON_PIN);
+
+    if (altReading != lastAltButtonState) {
+        lastAltDebounceTime = millis();
+    }
+
+    if ((millis() - lastAltDebounceTime) > ALT_DEBOUNCE_DELAY) {
+        if (altReading != currentAltButtonState) {
+            currentAltButtonState = altReading;
+            if (currentAltButtonState == LOW) {
+                dimmed = false;
+                setDimming(100);
+                taskLEDBlink.disable(); 
+                setButtonLED(0);
+                clearScreen();
+                isClockLayoutDrawn = false; 
+                executeTestButtonAction();
+                lastAltButtonState = altReading;
+                return true;
+            }
+        }
+    }
+
     if (reading != lastButtonState) { lastDebounceTime = millis(); }
     if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
         if (reading != currentButtonState) {
@@ -205,6 +285,7 @@ bool handleArcadeLogic() {
         }
     }
     lastButtonState = reading;
+    lastAltButtonState = altReading;
     return false;
 }
 
@@ -214,8 +295,21 @@ void setButtonLED(int brightness) {
 
 void onDebounceComplete() {
     Serial.println("\n[HARDWARE]: Button press stabilized and validated.");
-    if (connected) {
+
+    if (!connected) {
+        doubleTapPending = false;
+        updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
+        return;
+    }
+
+    if (doubleTapPending && (millis() - doubleTapArmTime) <= DOUBLE_TAP_WINDOW_MS) {
+        Serial.println("[HARDWARE]: Second tap confirmed. Executing action.");
+        doubleTapPending = false;
         executeButtonAction();
-    } 
-    else { updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3); }
+    } else {
+        doubleTapPending = true;
+        doubleTapArmTime = millis();
+        Serial.println("[HARDWARE]: First tap received. Waiting for second tap.");
+        updateMetricsArea("Tap Again", "TO SEND", TFT_ORANGE, 2);
+    }
 }
