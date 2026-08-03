@@ -4,6 +4,18 @@
 
 #define CURRENT_VERSION "1.0.4"
 
+#ifndef BACKEND_BASE_URL
+    #define BACKEND_BASE_URL "http://localhost:8081/api/yard"
+#endif
+
+#ifndef YARD_ID
+    #define YARD_ID "CV_AG_GRIND:Oakdale_1"
+#endif
+
+#ifndef API_PASSWORD
+    #define API_PASSWORD ""
+#endif
+
 // Global Time Server Parameters
 #define NTP_SERVER "pool.ntp.org"
 #define TZ_INFO "PST8PDT,M3.2.0,M11.1.0" // US Pacific Time

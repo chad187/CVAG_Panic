@@ -10,12 +10,14 @@
 #include <WiFiClientSecure.h>
 #include <base64.h>
 #include <ArduinoJson.h>
+#include <ctype.h>
 #define _TASK_STATUS_REQUEST
 #include <TaskSchedulerDeclarations.h>
 
 // Pin Configuration
 const int BUTTON_PIN = 26;  
-const int ALT_BUTTON_PIN = 35;
+const int TEST_ONE_PIN = 35;
+const int TEST_ALL_PIN = 0;
 const int LED_PIN = 27;
 extern Task taskLEDBlink;
 
@@ -25,10 +27,15 @@ bool currentButtonState = HIGH;
 unsigned long lastDebounceTime = 0;  
 const unsigned long DEBOUNCE_DELAY = 50; 
 
-bool lastAltButtonState = HIGH;
-bool currentAltButtonState = HIGH;
-unsigned long lastAltDebounceTime = 0;
-const unsigned long ALT_DEBOUNCE_DELAY = 50;
+bool lastTestButtonState = HIGH;
+bool currentTestButtonState = HIGH;
+unsigned long lastTestDebounceTime = 0;
+const unsigned long TEST_DEBOUNCE_DELAY = 50;
+
+bool lastTestAllButtonState = HIGH;
+bool currentTestAllButtonState = HIGH;
+unsigned long lastTestAllDebounceTime = 0;
+const unsigned long TEST_ALL_DEBOUNCE_DELAY = 50;
 
 // Double-tap confirmation flow
 bool doubleTapPending = false;
@@ -42,6 +49,30 @@ int currentPoolIndex = 0;
 
 int pendingRequestsCount = 0;
 bool dispatchHasFailed = false;
+
+String urlEncode(const String& value) {
+    String encoded;
+    for (size_t i = 0; i < value.length(); ++i) {
+        char c = value[i];
+        if (isalnum((unsigned char)c) || c == '-' || c == '_' || c == '.' || c == '~') {
+            encoded += c;
+        } else {
+            char hex[4];
+            snprintf(hex, sizeof(hex), "%%%02X", (unsigned char)c);
+            encoded += hex;
+        }
+    }
+    return encoded;
+}
+
+String buildAlertEndpoint(const String& route, const String& password) {
+    String endpoint = String(BACKEND_BASE_URL) + "/" + urlEncode(String(YARD_ID));
+    endpoint += route;
+    if (password.length() > 0) {
+        endpoint += "?password=" + urlEncode(password);
+    }
+    return endpoint;
+}
 
 // Convert state integers to human-readable text for logging
 const char* getReadyStateText(int state) {
@@ -126,21 +157,33 @@ void executeButtonAction() {
     
     updateMetricsArea("Syncing...", "FETCHING", TFT_YELLOW, 2);
 
-    #if defined(SHEET_ID) && defined(SHEET_PASSWORD)
-        WiFiClientSecure secureClient;
-        secureClient.setInsecure(); 
-
+    #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
         HTTPClient http;
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        http.addHeader("Content-Type", "application/json");
 
-        // --- THE SECURITY CHANGE ---
-        // Automatically appends '?password=xxxx' right onto the end of your Google Script URL
-        String secureUrl = String(SHEET_ID) + "?password=" + String(SHEET_PASSWORD);
+        String endpoint = buildAlertEndpoint("/alert/broadcast", String(API_PASSWORD));
+        JsonDocument requestDoc;
+        requestDoc["password"] = String(API_PASSWORD);
+        String requestBody;
+        serializeJson(requestDoc, requestBody);
 
-        if (http.begin(secureClient, secureUrl)) {
-            int httpCode = http.GET();
+        Serial.print("[CLOUD DATA]: POST "); Serial.println(endpoint);
+        Serial.print("[CLOUD DATA]: Payload: "); Serial.println(requestBody);
+
+        bool requestStarted = false;
+        if (endpoint.startsWith("https://")) {
+            WiFiClientSecure secureClient;
+            secureClient.setInsecure();
+            requestStarted = http.begin(secureClient, endpoint);
+        } else {
+            requestStarted = http.begin(endpoint);
+        }
+
+        if (requestStarted) {
+            int httpCode = http.POST(requestBody);
             
-            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
+            if (httpCode == 200 || httpCode == 429 || (httpCode >= 301 && httpCode <= 308)) {
                 String responseBody = http.getString();
                 Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
 
@@ -153,7 +196,7 @@ void executeButtonAction() {
                     if (status == "unauthorized") {
                         updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
                         triggerLedPattern(1000, 127, 2);
-                        Serial.println("[CRITICAL]: Google Script rejected our password credential!");
+                        Serial.println("[CRITICAL]: Backend rejected our password credential!");
                     } else if (status == "error") {
                         String minsLeft = doc["minutes_remaining"].as<String>();
                         String rateLimitMessage = "Wait " + minsLeft + "m";
@@ -184,7 +227,7 @@ void executeButtonAction() {
             http.end();
         }
     #else
-        Serial.println("[ERROR]: SHEET_ID or SHEET_PASSWORD macro configuration missing.");
+        Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
         updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
     #endif
 
@@ -197,17 +240,32 @@ void executeTestButtonAction() {
 
     updateMetricsArea("Testing...", "TEST", TFT_BLUE, 2);
 
-    #if defined(SHEET_ID) && defined(SHEET_PASSWORD)
-        WiFiClientSecure secureClient;
-        secureClient.setInsecure();
-
+    #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
         HTTPClient http;
         http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        http.addHeader("Content-Type", "application/json");
 
-        String testUrl = String(SHEET_ID) + "?password=" + String(SHEET_PASSWORD) + "&mode=test";
+        String endpoint = buildAlertEndpoint("/alert/testOne", String(API_PASSWORD));
+        JsonDocument requestDoc;
+        requestDoc["password"] = String(API_PASSWORD);
+        requestDoc["mode"] = "test";
+        String requestBody;
+        serializeJson(requestDoc, requestBody);
 
-        if (http.begin(secureClient, testUrl)) {
-            int httpCode = http.GET();
+        Serial.print("[TEST DATA]: POST "); Serial.println(endpoint);
+        Serial.print("[TEST DATA]: Payload: "); Serial.println(requestBody);
+
+        bool requestStarted = false;
+        if (endpoint.startsWith("https://")) {
+            WiFiClientSecure secureClient;
+            secureClient.setInsecure();
+            requestStarted = http.begin(secureClient, endpoint);
+        } else {
+            requestStarted = http.begin(endpoint);
+        }
+
+        if (requestStarted) {
+            int httpCode = http.POST(requestBody);
 
             if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
                 String responseBody = http.getString();
@@ -223,14 +281,68 @@ void executeTestButtonAction() {
             http.end();
         }
     #else
-        Serial.println("[ERROR]: SHEET_ID or SHEET_PASSWORD macro configuration missing.");
+        Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
         updateMetricsArea("Test", "FAIL", TFT_RED, 3);
+    #endif
+}
+
+void executeTestAllButtonAction() {
+    Serial.println("\n==================================================");
+    Serial.println("[ACTION]: Launching Test All Request...");
+    Serial.println("==================================================");
+
+    updateMetricsArea("Testing...", "TEST ALL", TFT_BLUE, 2);
+
+    #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
+        HTTPClient http;
+        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
+        http.addHeader("Content-Type", "application/json");
+
+        String endpoint = buildAlertEndpoint("/alert/testAll", String(API_PASSWORD));
+        JsonDocument requestDoc;
+        requestDoc["password"] = String(API_PASSWORD);
+        requestDoc["mode"] = "testAll";
+        String requestBody;
+        serializeJson(requestDoc, requestBody);
+
+        Serial.print("[TEST ALL DATA]: POST "); Serial.println(endpoint);
+        Serial.print("[TEST ALL DATA]: Payload: "); Serial.println(requestBody);
+
+        bool requestStarted = false;
+        if (endpoint.startsWith("https://")) {
+            WiFiClientSecure secureClient;
+            secureClient.setInsecure();
+            requestStarted = http.begin(secureClient, endpoint);
+        } else {
+            requestStarted = http.begin(endpoint);
+        }
+
+        if (requestStarted) {
+            int httpCode = http.POST(requestBody);
+
+            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
+                String responseBody = http.getString();
+                Serial.print("[TEST ALL DATA]: Received Payload: "); Serial.println(responseBody);
+                updateMetricsArea("Test All", "OK", TFT_GREEN, 3);
+                triggerLedPattern(1000, 127, 6);
+            } else {
+                updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
+                triggerLedPattern(3000, 127, 2);
+                Serial.print("[ERROR]: Test All request failed with code: ");
+                Serial.println(httpCode);
+            }
+            http.end();
+        }
+    #else
+        Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
+        updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
     #endif
 }
 
 void initArcadeHardware() {
     pinMode(BUTTON_PIN, INPUT_PULLUP); 
-    pinMode(ALT_BUTTON_PIN, INPUT_PULLUP);
+    pinMode(TEST_ONE_PIN, INPUT_PULLUP);
+    pinMode(TEST_ALL_PIN, INPUT_PULLUP);
     ledcSetup(0, 5000, 8);         
     ledcAttachPin(LED_PIN, 0);      
 }
@@ -244,16 +356,16 @@ bool handleArcadeLogic() {
         updateMetricsArea("Broadcast", "READY", TFT_BLUE, 3);
     }
 
-    bool altReading = digitalRead(ALT_BUTTON_PIN);
+    bool altReading = digitalRead(TEST_ONE_PIN);
 
-    if (altReading != lastAltButtonState) {
-        lastAltDebounceTime = millis();
+    if (altReading != lastTestButtonState) {
+        lastTestDebounceTime = millis();
     }
 
-    if ((millis() - lastAltDebounceTime) > ALT_DEBOUNCE_DELAY) {
-        if (altReading != currentAltButtonState) {
-            currentAltButtonState = altReading;
-            if (currentAltButtonState == LOW) {
+    if ((millis() - lastTestDebounceTime) > TEST_DEBOUNCE_DELAY) {
+        if (altReading != currentTestButtonState) {
+            currentTestButtonState = altReading;
+            if (currentTestButtonState == LOW) {
                 dimmed = false;
                 setDimming(100);
                 taskLEDBlink.disable(); 
@@ -261,7 +373,30 @@ bool handleArcadeLogic() {
                 clearScreen();
                 isClockLayoutDrawn = false; 
                 executeTestButtonAction();
-                lastAltButtonState = altReading;
+                lastTestButtonState = altReading;
+                return true;
+            }
+        }
+    }
+
+    bool testAllReading = digitalRead(TEST_ALL_PIN);
+
+    if (testAllReading != lastTestAllButtonState) {
+        lastTestAllDebounceTime = millis();
+    }
+
+    if ((millis() - lastTestAllDebounceTime) > TEST_ALL_DEBOUNCE_DELAY) {
+        if (testAllReading != currentTestAllButtonState) {
+            currentTestAllButtonState = testAllReading;
+            if (currentTestAllButtonState == LOW) {
+                dimmed = false;
+                setDimming(100);
+                taskLEDBlink.disable(); 
+                setButtonLED(0);
+                clearScreen();
+                isClockLayoutDrawn = false; 
+                executeTestAllButtonAction();
+                lastTestAllButtonState = testAllReading;
                 return true;
             }
         }
@@ -285,7 +420,8 @@ bool handleArcadeLogic() {
         }
     }
     lastButtonState = reading;
-    lastAltButtonState = altReading;
+    lastTestButtonState = altReading;
+    lastTestAllButtonState = testAllReading;
     return false;
 }
 
