@@ -43,22 +43,25 @@ jobs:
 
       - name: Generate private_env.ini from secrets
         env:
-            WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
-            SHEET_ID: ${{ secrets.SHEET_ID }}
-            SHEET_PASSWORD: ${{ secrets.SHEET_PASSWORD }}
+          WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
+          BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
+          YARD_ID: ${{ secrets.YARD_ID }}
+          API_PASSWORD: ${{ secrets.API_PASSWORD }}
         run: |
             python - <<'PY'
             import os
             w = os.environ.get('WIFI_PROFILES','')
-            s = os.environ.get('SHEET_ID','')
-            p = os.environ.get('SHEET_PASSWORD','')
+            b = os.environ.get('BACKEND_BASE_URL','')
+            y = os.environ.get('YARD_ID','')
+            p = os.environ.get('API_PASSWORD','')
             with open('private_env.ini','w') as f:
                 f.write('[extra_build_flags]\n')
                 f.write('private_flags = \n')
                 f.write(f'    -D WIFI_PROFILES={w}\n')
-                f.write(f'    -D SHEET_ID={s}\n')
-                f.write(f'    -D SHEET_PASSWORD={p}\n')
-            print('private_env.ini generated (verbatim)')
+                f.write(f'    -D BACKEND_BASE_URL="{b}"\n')
+                f.write(f'    -D YARD_ID="{y}"\n')
+                f.write(f'    -D API_PASSWORD="{p}"\n')
+            print('private_env.ini generated successfully')
             PY
 
       - name: Build firmware with PlatformIO
