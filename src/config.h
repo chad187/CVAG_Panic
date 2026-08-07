@@ -2,7 +2,7 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define CURRENT_VERSION "1.0.4"
+#define CURRENT_VERSION "1.0.5"
 
 #ifndef BACKEND_BASE_URL
     #define BACKEND_BASE_URL "http://localhost:8081/api/yard"
