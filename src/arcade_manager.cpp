@@ -158,59 +158,85 @@ void executeButtonAction() {
     updateMetricsArea("Syncing...", "FETCHING", TFT_YELLOW, 2);
 
     #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        http.addHeader("Content-Type", "application/json");
+        String baseUrl = String(BACKEND_BASE_URL);
+        int hostStart = baseUrl.indexOf("://") + 3;
+        int hostEnd = baseUrl.indexOf('/', hostStart);
+        String host = baseUrl.substring(hostStart, hostEnd);
 
-        String endpoint = buildAlertEndpoint("/alert/broadcast", String(API_PASSWORD));
-        JsonDocument requestDoc;
-        requestDoc["password"] = String(API_PASSWORD);
-        String requestBody;
-        serializeJson(requestDoc, requestBody);
+        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/broadcast";
+        path.replace(":", "%3A");
 
-        Serial.print("[CLOUD DATA]: POST "); Serial.println(endpoint);
-        Serial.print("[CLOUD DATA]: Payload: "); Serial.println(requestBody);
+        String jsonPayload = "{\"password\":\"" + String(API_PASSWORD) + "\"}";
 
-        bool requestStarted = false;
-        if (endpoint.startsWith("https://")) {
-            WiFiClientSecure secureClient;
-            secureClient.setInsecure();
-            requestStarted = http.begin(secureClient, endpoint);
-        } else {
-            requestStarted = http.begin(endpoint);
-        }
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure();
 
-        if (requestStarted) {
-            int httpCode = http.POST(requestBody);
-            
-            if (httpCode == 200 || httpCode == 429 || (httpCode >= 301 && httpCode <= 308)) {
-                String responseBody = http.getString();
+        Serial.print("[CLOUD DATA]: Connecting to "); Serial.print(host); Serial.println(":443...");
+        
+        if (secureClient.connect(host.c_str(), 443)) {
+            secureClient.print("POST " + path + " HTTP/1.1\r\n");
+            secureClient.print("Host: " + host + "\r\n");
+            secureClient.print("Connection: close\r\n");
+            secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Content-Length: " + String(jsonPayload.length()) + "\r\n\r\n");
+            secureClient.print(jsonPayload);
+
+            unsigned long timeout = millis();
+            int httpCode = 0;
+            String responseBody = "";
+            bool headersPassed = false;
+
+            while (secureClient.connected() && millis() - timeout < 5000) {
+                if (secureClient.available()) {
+                    String line = secureClient.readStringUntil('\n');
+                    line.trim();
+                    
+                    if (!headersPassed) {
+                        if (line.startsWith("HTTP/1.")) {
+                            int spaceIdx = line.indexOf(' ');
+                            if (spaceIdx != -1) {
+                                httpCode = line.substring(spaceIdx + 1, spaceIdx + 4).toInt();
+                            }
+                        }
+                        if (line.length() == 0) {
+                            headersPassed = true; // Blank line marks end of headers
+                        }
+                    } else {
+                        responseBody += line + "\n";
+                    }
+                }
+            }
+            secureClient.stop();
+
+            Serial.print("[RESPONSE]: HTTP Code: "); Serial.println(httpCode);
+            if (responseBody.length() > 0) {
                 Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
+            }
 
+            if (httpCode == 200) {
+                updateMetricsArea("Broadcast", "SUCCESS", TFT_GREEN, 3);
+                triggerLedPattern(250, 255, 4);
+                Serial.println("[SUCCESS]: Network queues successfully triggered.");
+            } else if (httpCode == 429 || httpCode == 401 || httpCode == 400) {
                 JsonDocument doc; 
                 DeserializationError error = deserializeJson(doc, responseBody);
 
                 if (!error) {
                     String status = doc["status"].as<String>();
                     
-                    if (status == "unauthorized") {
+                    if (status == "unauthorized" || httpCode == 401) {
                         updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
                         triggerLedPattern(1000, 127, 2);
                         Serial.println("[CRITICAL]: Backend rejected our password credential!");
-                    } else if (status == "error") {
+                    } else if (status == "error" || httpCode == 429) {
                         String minsLeft = doc["minutes_remaining"].as<String>();
                         String rateLimitMessage = "Wait " + minsLeft + "m";
                         triggerLedPattern(1000, 127, 3);
                         updateMetricsArea("Rate Limit", rateLimitMessage.c_str(), TFT_ORANGE, 2);
-                    } else if (status == "success") {
-                        updateMetricsArea("Broadcast", "SUCCESS", TFT_GREEN, 3);
-                        triggerLedPattern(250, 255, 4);
-                        Serial.println("[SUCCESS]: Network queues successfully triggered.");
                     } else {
                         updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
                         triggerLedPattern(1000, 127, 5);
                         Serial.println("[FAILURE]: Failed to trigger network queues.");
-                        Serial.println("[DEBUG]: Unrecognized status field in JSON response: " + status);
                     }
                 } else {
                     updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
@@ -224,13 +250,15 @@ void executeButtonAction() {
                 Serial.print("[ERROR]: HTTP request failed with code: ");
                 Serial.println(httpCode);
             }
-            http.end();
+        } else {
+            Serial.println("[ERROR]: Direct socket connection to server failed!");
+            updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
+            triggerLedPattern(3000, 127, 2);
         }
     #else
-        Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
+        Serial.println("[ERROR]: Missing environment macros.");
         updateMetricsArea("Broadcast", "FAIL", TFT_RED, 3);
     #endif
-
 }
 
 void executeTestButtonAction() {
@@ -241,44 +269,73 @@ void executeTestButtonAction() {
     updateMetricsArea("Testing...", "TEST", TFT_BLUE, 2);
 
     #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        http.addHeader("Content-Type", "application/json");
+        // Dynamically parse host from BACKEND_BASE_URL
+        String baseUrl = String(BACKEND_BASE_URL);
+        int hostStart = baseUrl.indexOf("://") + 3;
+        int hostEnd = baseUrl.indexOf('/', hostStart);
+        String host = baseUrl.substring(hostStart, hostEnd);
 
-        String endpoint = buildAlertEndpoint("/alert/testOne", String(API_PASSWORD));
+        // Construct dynamic path: /api/yard/{YARD_ID}/alert/testOne
+        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/testOne";
+        path.replace(":", "%3A"); // URL-encode the colon in the Yard ID
+
+        // Build JSON payload matching your backend's expected structure
         JsonDocument requestDoc;
         requestDoc["password"] = String(API_PASSWORD);
         requestDoc["mode"] = "test";
         String requestBody;
         serializeJson(requestDoc, requestBody);
 
-        Serial.print("[TEST DATA]: POST "); Serial.println(endpoint);
+        Serial.print("[TEST DATA]: POST https://"); Serial.print(host); Serial.println(path);
         Serial.print("[TEST DATA]: Payload: "); Serial.println(requestBody);
 
-        bool requestStarted = false;
-        if (endpoint.startsWith("https://")) {
-            WiFiClientSecure secureClient;
-            secureClient.setInsecure();
-            requestStarted = http.begin(secureClient, endpoint);
-        } else {
-            requestStarted = http.begin(endpoint);
-        }
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure();
 
-        if (requestStarted) {
-            int httpCode = http.POST(requestBody);
+        Serial.print("[CLOUD DATA]: Connecting to "); Serial.print(host); Serial.println(":443...");
 
-            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
-                String responseBody = http.getString();
-                Serial.print("[TEST DATA]: Received Payload: "); Serial.println(responseBody);
+        if (secureClient.connect(host.c_str(), 443)) {
+            secureClient.print("POST " + path + " HTTP/1.1\r\n");
+            secureClient.print("Host: " + host + "\r\n");
+            secureClient.print("Connection: close\r\n");
+            secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Content-Length: " + String(requestBody.length()) + "\r\n\r\n");
+            secureClient.print(requestBody);
+
+            unsigned long timeout = millis();
+            bool success = false;
+            while (secureClient.connected() && millis() - timeout < 5000) {
+                if (secureClient.available()) {
+                    String line = secureClient.readStringUntil('\n');
+                    Serial.print("[RESPONSE]: "); Serial.println(line);
+                    if (line.indexOf("200") != -1) {
+                        success = true;
+                    }
+                    // Read remaining response body if needed
+                    while (secureClient.available()) {
+                        String bodyLine = secureClient.readStringUntil('\n');
+                        if (bodyLine.length() > 0 && bodyLine.startsWith("{")) {
+                            Serial.print("[TEST DATA]: Received Payload: "); 
+                            Serial.println(bodyLine);
+                        }
+                    }
+                    break;
+                }
+            }
+            secureClient.stop();
+
+            if (success) {
                 updateMetricsArea("Test", "OK", TFT_GREEN, 3);
                 triggerLedPattern(1000, 127, 6);
             } else {
                 updateMetricsArea("Test", "FAIL", TFT_RED, 3);
                 triggerLedPattern(3000, 127, 2);
-                Serial.print("[ERROR]: Test request failed with code: ");
-                Serial.println(httpCode);
+                Serial.println("[ERROR]: Test request failed or returned non-200 status.");
             }
-            http.end();
+        } else {
+            Serial.println("[ERROR]: Direct socket connection to server failed!");
+            updateMetricsArea("Test", "FAIL", TFT_RED, 3);
+            triggerLedPattern(3000, 127, 2);
         }
     #else
         Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
@@ -294,44 +351,109 @@ void executeTestAllButtonAction() {
     updateMetricsArea("Testing...", "TEST ALL", TFT_BLUE, 2);
 
     #if defined(BACKEND_BASE_URL) && defined(API_PASSWORD) && defined(YARD_ID)
-        HTTPClient http;
-        http.setFollowRedirects(HTTPC_STRICT_FOLLOW_REDIRECTS);
-        http.addHeader("Content-Type", "application/json");
+        String baseUrl = String(BACKEND_BASE_URL);
+        int hostStart = baseUrl.indexOf("://") + 3;
+        int hostEnd = baseUrl.indexOf('/', hostStart);
+        String host = baseUrl.substring(hostStart, hostEnd);
 
-        String endpoint = buildAlertEndpoint("/alert/testAll", String(API_PASSWORD));
+        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/testAll";
+        path.replace(":", "%3A");
+
         JsonDocument requestDoc;
         requestDoc["password"] = String(API_PASSWORD);
         requestDoc["mode"] = "testAll";
         String requestBody;
         serializeJson(requestDoc, requestBody);
 
-        Serial.print("[TEST ALL DATA]: POST "); Serial.println(endpoint);
+        Serial.print("[TEST ALL DATA]: POST https://"); Serial.print(host); Serial.println(path);
         Serial.print("[TEST ALL DATA]: Payload: "); Serial.println(requestBody);
 
-        bool requestStarted = false;
-        if (endpoint.startsWith("https://")) {
-            WiFiClientSecure secureClient;
-            secureClient.setInsecure();
-            requestStarted = http.begin(secureClient, endpoint);
-        } else {
-            requestStarted = http.begin(endpoint);
-        }
+        WiFiClientSecure secureClient;
+        secureClient.setInsecure();
 
-        if (requestStarted) {
-            int httpCode = http.POST(requestBody);
+        Serial.print("[CLOUD DATA]: Connecting to "); Serial.print(host); Serial.println(":443...");
 
-            if (httpCode == 200 || (httpCode >= 301 && httpCode <= 308)) {
-                String responseBody = http.getString();
-                Serial.print("[TEST ALL DATA]: Received Payload: "); Serial.println(responseBody);
-                updateMetricsArea("Test All", "OK", TFT_GREEN, 3);
-                triggerLedPattern(1000, 127, 6);
+        if (secureClient.connect(host.c_str(), 443)) {
+            secureClient.print("POST " + path + " HTTP/1.1\r\n");
+            secureClient.print("Host: " + host + "\r\n");
+            secureClient.print("Connection: close\r\n");
+            secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Content-Length: " + String(requestBody.length()) + "\r\n\r\n");
+            secureClient.print(requestBody);
+
+            unsigned long timeout = millis();
+            int httpCode = 0;
+            String responseBody = "";
+            bool headersPassed = false;
+
+            while (secureClient.connected() && millis() - timeout < 5000) {
+                if (secureClient.available()) {
+                    String line = secureClient.readStringUntil('\n');
+                    line.trim();
+                    
+                    if (!headersPassed) {
+                        if (line.startsWith("HTTP/1.")) {
+                            int spaceIdx = line.indexOf(' ');
+                            if (spaceIdx != -1) {
+                                httpCode = line.substring(spaceIdx + 1, spaceIdx + 4).toInt();
+                            }
+                        }
+                        if (line.length() == 0) {
+                            headersPassed = true; // Blank line marks end of headers
+                        }
+                    } else {
+                        responseBody += line + "\n";
+                    }
+                }
+            }
+            secureClient.stop();
+
+            Serial.print("[RESPONSE]: HTTP Code: "); Serial.println(httpCode);
+            if (responseBody.length() > 0) {
+                Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
+            }
+
+            if (httpCode == 200) {
+                updateMetricsArea("Test All", "SUCCESS", TFT_GREEN, 3);
+                triggerLedPattern(250, 255, 4);
+                Serial.println("[SUCCESS]: Network queues successfully triggered.");
+            } else if (httpCode == 429 || httpCode == 401 || httpCode == 400) {
+                JsonDocument doc; 
+                DeserializationError error = deserializeJson(doc, responseBody);
+
+                if (!error) {
+                    String status = doc["status"].as<String>();
+                    
+                    if (status == "unauthorized" || httpCode == 401) {
+                        updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
+                        triggerLedPattern(1000, 127, 2);
+                        Serial.println("[CRITICAL]: Backend rejected our password credential!");
+                    } else if (status == "error" || httpCode == 429) {
+                        String minsLeft = doc["minutes_remaining"].as<String>();
+                        String rateLimitMessage = "Wait " + minsLeft + "m";
+                        triggerLedPattern(1000, 127, 3);
+                        updateMetricsArea("Rate Limit", rateLimitMessage.c_str(), TFT_ORANGE, 2);
+                    } else {
+                        updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
+                        triggerLedPattern(1000, 127, 5);
+                        Serial.println("[FAILURE]: Failed to trigger network queues.");
+                    }
+                } else {
+                    updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
+                    triggerLedPattern(1000, 127, 6);
+                    Serial.print("[ERROR]: Failed to parse JSON response. Error code: ");
+                    Serial.println(error.c_str());
+                }
             } else {
                 updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
-                triggerLedPattern(3000, 127, 2);
-                Serial.print("[ERROR]: Test All request failed with code: ");
+                triggerLedPattern(1000, 127, 7);
+                Serial.print("[ERROR]: HTTP request failed with code: ");
                 Serial.println(httpCode);
             }
-            http.end();
+        } else {
+            Serial.println("[ERROR]: Direct socket connection to server failed!");
+            updateMetricsArea("Test All", "FAIL", TFT_RED, 3);
+            triggerLedPattern(3000, 127, 2);
         }
     #else
         Serial.println("[ERROR]: BACKEND_BASE_URL, YARD_ID or API_PASSWORD macro configuration missing.");
