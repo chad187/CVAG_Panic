@@ -2,7 +2,19 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define CURRENT_VERSION "1.0.4"
+#define CURRENT_VERSION "1.0.5"
+
+#ifndef BACKEND_BASE_URL
+    #define BACKEND_BASE_URL "http://localhost:8081/api/yard"
+#endif
+
+#ifndef YARD_ID
+    #define YARD_ID "CV_AG_GRIND:Oakdale_1"
+#endif
+
+#ifndef API_PASSWORD
+    #define API_PASSWORD ""
+#endif
 
 // Global Time Server Parameters
 #define NTP_SERVER "pool.ntp.org"
