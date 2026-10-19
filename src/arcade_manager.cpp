@@ -163,10 +163,9 @@ void executeButtonAction() {
         int hostEnd = baseUrl.indexOf('/', hostStart);
         String host = baseUrl.substring(hostStart, hostEnd);
 
-        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/broadcast";
-        path.replace(":", "%3A");
+        String path = baseUrl.substring(hostEnd) + "/trigger/";
 
-        String jsonPayload = "{\"password\":\"" + String(API_PASSWORD) + "\"}";
+        String jsonPayload = "{\"action\":\"broadcast\"}";
 
         WiFiClientSecure secureClient;
         secureClient.setInsecure();
@@ -178,6 +177,7 @@ void executeButtonAction() {
             secureClient.print("Host: " + host + "\r\n");
             secureClient.print("Connection: close\r\n");
             secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Authorization: Bearer " + String(API_PASSWORD) + "\r\n");
             secureClient.print("Content-Length: " + String(jsonPayload.length()) + "\r\n\r\n");
             secureClient.print(jsonPayload);
 
@@ -213,7 +213,7 @@ void executeButtonAction() {
                 Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
             }
 
-            if (httpCode == 200) {
+            if (httpCode >= 200 && httpCode < 300) {
                 updateMetricsArea("Broadcast", "SUCCESS", TFT_GREEN, 3);
                 triggerLedPattern(250, 255, 4);
                 Serial.println("[SUCCESS]: Network queues successfully triggered.");
@@ -228,9 +228,9 @@ void executeButtonAction() {
                         updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
                         triggerLedPattern(1000, 127, 2);
                         Serial.println("[CRITICAL]: Backend rejected our password credential!");
-                    } else if (status == "error" || httpCode == 429) {
-                        String minsLeft = doc["minutes_remaining"].as<String>();
-                        String rateLimitMessage = "Wait " + minsLeft + "m";
+                    } else if (httpCode == 429) {
+                        int secondsLeft = doc["retry_after"] | 0;
+                        String rateLimitMessage = "Wait " + String((secondsLeft + 59) / 60) + "m";
                         triggerLedPattern(1000, 127, 3);
                         updateMetricsArea("Rate Limit", rateLimitMessage.c_str(), TFT_ORANGE, 2);
                     } else {
@@ -275,14 +275,12 @@ void executeTestButtonAction() {
         int hostEnd = baseUrl.indexOf('/', hostStart);
         String host = baseUrl.substring(hostStart, hostEnd);
 
-        // Construct dynamic path: /api/yard/{YARD_ID}/alert/testOne
-        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/testOne";
-        path.replace(":", "%3A"); // URL-encode the colon in the Yard ID
+        // Construct dynamic path: /alerts/api/trigger/
+        String path = baseUrl.substring(hostEnd) + "/trigger/";
 
         // Build JSON payload matching your backend's expected structure
         JsonDocument requestDoc;
-        requestDoc["password"] = String(API_PASSWORD);
-        requestDoc["mode"] = "test";
+        requestDoc["action"] = "test_one";
         String requestBody;
         serializeJson(requestDoc, requestBody);
 
@@ -299,6 +297,7 @@ void executeTestButtonAction() {
             secureClient.print("Host: " + host + "\r\n");
             secureClient.print("Connection: close\r\n");
             secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Authorization: Bearer " + String(API_PASSWORD) + "\r\n");
             secureClient.print("Content-Length: " + String(requestBody.length()) + "\r\n\r\n");
             secureClient.print(requestBody);
 
@@ -308,7 +307,9 @@ void executeTestButtonAction() {
                 if (secureClient.available()) {
                     String line = secureClient.readStringUntil('\n');
                     Serial.print("[RESPONSE]: "); Serial.println(line);
-                    if (line.indexOf("200") != -1) {
+                    int spaceIdx = line.indexOf(' ');
+                    int httpCode = (spaceIdx != -1) ? line.substring(spaceIdx + 1, spaceIdx + 4).toInt() : 0;
+                    if (httpCode >= 200 && httpCode < 300) {
                         success = true;
                     }
                     // Read remaining response body if needed
@@ -356,12 +357,10 @@ void executeTestAllButtonAction() {
         int hostEnd = baseUrl.indexOf('/', hostStart);
         String host = baseUrl.substring(hostStart, hostEnd);
 
-        String path = baseUrl.substring(hostEnd) + "/" + String(YARD_ID) + "/alert/testAll";
-        path.replace(":", "%3A");
+        String path = baseUrl.substring(hostEnd) + "/trigger/";
 
         JsonDocument requestDoc;
-        requestDoc["password"] = String(API_PASSWORD);
-        requestDoc["mode"] = "testAll";
+        requestDoc["action"] = "test_all";
         String requestBody;
         serializeJson(requestDoc, requestBody);
 
@@ -378,6 +377,7 @@ void executeTestAllButtonAction() {
             secureClient.print("Host: " + host + "\r\n");
             secureClient.print("Connection: close\r\n");
             secureClient.print("Content-Type: application/json\r\n");
+            secureClient.print("Authorization: Bearer " + String(API_PASSWORD) + "\r\n");
             secureClient.print("Content-Length: " + String(requestBody.length()) + "\r\n\r\n");
             secureClient.print(requestBody);
 
@@ -413,7 +413,7 @@ void executeTestAllButtonAction() {
                 Serial.print("[CLOUD DATA]: Received Payload: "); Serial.println(responseBody);
             }
 
-            if (httpCode == 200) {
+            if (httpCode >= 200 && httpCode < 300) {
                 updateMetricsArea("Test All", "SUCCESS", TFT_GREEN, 3);
                 triggerLedPattern(250, 255, 4);
                 Serial.println("[SUCCESS]: Network queues successfully triggered.");
@@ -428,9 +428,9 @@ void executeTestAllButtonAction() {
                         updateMetricsArea("Auth Error", "BAD PASS", TFT_RED, 2);
                         triggerLedPattern(1000, 127, 2);
                         Serial.println("[CRITICAL]: Backend rejected our password credential!");
-                    } else if (status == "error" || httpCode == 429) {
-                        String minsLeft = doc["minutes_remaining"].as<String>();
-                        String rateLimitMessage = "Wait " + minsLeft + "m";
+                    } else if (httpCode == 429) {
+                        int secondsLeft = doc["retry_after"] | 0;
+                        String rateLimitMessage = "Wait " + String((secondsLeft + 59) / 60) + "m";
                         triggerLedPattern(1000, 127, 3);
                         updateMetricsArea("Rate Limit", rateLimitMessage.c_str(), TFT_ORANGE, 2);
                     } else {

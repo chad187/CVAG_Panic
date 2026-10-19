@@ -5,7 +5,7 @@
 #define CURRENT_VERSION "1.0.7"
 
 #ifndef BACKEND_BASE_URL
-    #define BACKEND_BASE_URL "http://localhost:8081/api/yard"
+    #define BACKEND_BASE_URL "https://cvag.rocks/alerts/api"
 #endif
 
 #ifndef YARD_ID
