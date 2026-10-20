@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <string.h>
 #include "config.h"
+#include "credential_store.h"
 #include "arcade_manager.h"
 #include "network_manager.h" 
 #include "display_manager.h"
@@ -198,7 +199,7 @@ static void postAlert(const AlertView& view) {
     drawHeader(view.header, TFT_DARKGREY);
     updateMetricsArea(view.busyLabel, view.busyValue, view.busyColor, view.busySize);
 
-#if defined(BACKEND_BASE_URL) && defined(API_PASSWORD)
+#if defined(BACKEND_BASE_URL)
     String baseUrl = String(BACKEND_BASE_URL);
     int hostStart = baseUrl.indexOf("://") + 3;
     int hostEnd = baseUrl.indexOf('/', hostStart);
@@ -240,7 +241,13 @@ static void postAlert(const AlertView& view) {
             secureClient.print("Host: " + host + "\r\n");
             secureClient.print("Connection: close\r\n");
             secureClient.print("Content-Type: application/json\r\n");
-            secureClient.print("Authorization: Bearer " + String(API_PASSWORD) + "\r\n");
+            const char* apiPassword = credentialApiPassword();
+            if (apiPassword[0] == '\0') {
+                Serial.println("[ERROR]: No API password is stored.");
+                secureClient.stop();
+                continue;
+            }
+            secureClient.print("Authorization: Bearer " + String(apiPassword) + "\r\n");
             secureClient.print("Content-Length: " + String(jsonPayload.length()) + "\r\n\r\n");
             secureClient.print(jsonPayload);
 
@@ -267,7 +274,7 @@ static void postAlert(const AlertView& view) {
         triggerLedPattern(3000, 127, 2);
     }
 #else
-    Serial.println("[ERROR]: BACKEND_BASE_URL or API_PASSWORD is missing.");
+    Serial.println("[ERROR]: BACKEND_BASE_URL is missing.");
     updateMetricsArea(view.resultLabel, "FAIL", TFT_RED, view.resultSize);
 #endif
 }

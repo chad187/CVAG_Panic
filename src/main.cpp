@@ -5,6 +5,8 @@
 #include "display_manager.h"
 #include "network_manager.h"
 #include "arcade_manager.h"
+#include "credential_store.h"
+#include "node_config.h"
 
 Scheduler runner; 
 bool isClockLayoutDrawn = false; 
@@ -116,6 +118,10 @@ void clockCallback() {
 
 // This runs automatically in the background every 5 minutes
 void maintenanceCallback() {
+    if (connected) {
+        serviceNodeConfig();
+    }
+
     struct tm timeinfo;
     if (!getLocalTime(&timeinfo)) {
         return; 
@@ -174,10 +180,15 @@ void setup() {
     
     initDisplay();
     initArcadeHardware();
+    loadCredentials();
+    seedCredentialsFromBuild();
     noteFirmwareBoot();
     drawHeader("STARTING UP...", TFT_DARKGREY); 
     
     initialWIFI();
+    if (connected) {
+        pullNodeConfig();
+    }
     FirmwareCheckResult bootCheck = connected ? checkForFirmwareUpdates() : FIRMWARE_CHECK_FAILED;
     if (bootCheck != FIRMWARE_CHECK_FAILED) {
         confirmRunningFirmware();

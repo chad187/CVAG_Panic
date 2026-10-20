@@ -1,5 +1,6 @@
 // src/network_manager.cpp
 #include "network_manager.h"
+#include "credential_store.h"
 #include <time.h>
 #include <string.h>
 #include "config.h"
@@ -286,6 +287,31 @@ enum NetworkState {
 // 2. Declare your static tracking instance using that new type
 static NetworkState netState = STATE_INITIAL_SCAN;
 static int currentNetworkIndex = 0;
+
+static int profileCount() {
+    int count = credentialCount();
+    if (count <= 0) {
+        return 0;
+    }
+    if (currentNetworkIndex < 0 || currentNetworkIndex >= count) {
+        currentNetworkIndex = 0;
+    }
+    return count;
+}
+
+static const char* currentSsid() {
+    if (profileCount() == 0) {
+        return "";
+    }
+    return credentialSsid(currentNetworkIndex);
+}
+
+static const char* currentPassword() {
+    if (profileCount() == 0) {
+        return "";
+    }
+    return credentialPassword(currentNetworkIndex);
+}
 static unsigned long connectionTimestamp = 0;
 const unsigned long AUTH_TIMEOUT_MS = 15000; 
 
@@ -295,8 +321,8 @@ void initialWIFI() {
     Serial.println("\n[BOOT]: Initializing blocking network scan via WiFiMulti...");
     
     // Clear out any stale registration profiles and prime the credentials list
-    for (int i = 0; i < NETWORK_COUNT; i++) {
-        wifiMulti.addAP(myNetworks[i].ssid, myNetworks[i].password);
+    for (int i = 0; i < profileCount(); i++) {
+        wifiMulti.addAP(credentialSsid(i), credentialPassword(i));
     }
     
     int timeoutCounter = 0;
@@ -317,8 +343,8 @@ void initialWIFI() {
         configTzTime(TZ_INFO, NTP_SERVER);
         
         String activeSSID = WiFi.SSID();
-        for (int i = 0; i < NETWORK_COUNT; i++) {
-            if (activeSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
+        for (int i = 0; i < profileCount(); i++) {
+            if (activeSSID.equalsIgnoreCase(credentialSsid(i))) {
                 currentNetworkIndex = i;
                 break;
             }
@@ -367,7 +393,7 @@ static void beginLinkRecovery(unsigned long now) {
     connected = false;
     consecutiveWanFailures = 0;
     wanMissStartedMs = 0;
-    Serial.printf("\n[WATCHDOG]: Dropping link for profile: %s\n", myNetworks[currentNetworkIndex].ssid);
+    Serial.printf("\n[WATCHDOG]: Dropping link for profile: %s\n", currentSsid());
 
     setNetworkDisplayHold(true);
     updateStatusArea("Link Lost", TFT_RED);
@@ -379,7 +405,7 @@ static void beginLinkRecovery(unsigned long now) {
 
     WiFi.mode(WIFI_STA);
     delay(50);
-    WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+    WiFi.begin(currentSsid(), currentPassword());
 
     connectionTimestamp = now;
     netState = STATE_TRANSITION;
@@ -404,8 +430,8 @@ void checkLiveConnection() {
                     
                     connected = true;
                     String activeSSID = WiFi.SSID();
-                    for (int i = 0; i < NETWORK_COUNT; i++) {
-                        if (activeSSID.equalsIgnoreCase(String(myNetworks[i].ssid))) {
+                    for (int i = 0; i < profileCount(); i++) {
+                        if (activeSSID.equalsIgnoreCase(credentialSsid(i))) {
                             currentNetworkIndex = i;
                             break;
                         }
@@ -431,7 +457,7 @@ void checkLiveConnection() {
                 WiFi.disconnect(true, true);
                 WiFi.mode(WIFI_STA);
                 delay(50);
-                WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+                WiFi.begin(currentSsid(), currentPassword());
             }
             break;
         }
@@ -441,7 +467,7 @@ void checkLiveConnection() {
         // =========================================================================
         case STATE_TRANSITION: {
             Serial.printf("[WATCHDOG-PROBE]: Testing Profile %d [%s] -> Status Code: %d\n", 
-                          currentNetworkIndex, myNetworks[currentNetworkIndex].ssid, currentStatus);
+                          currentNetworkIndex, currentSsid(), currentStatus);
             
             // If the hardware link is secured, test for true WAN internet right now
             if (currentStatus == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
@@ -474,15 +500,19 @@ void checkLiveConnection() {
             // Check if we have spent too much time waiting for this specific profile to negotiate an IP address
             if (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS || currentStatus == WL_CONNECT_FAILED) {
                 // Increment to the next fallback credential block safely
-                currentNetworkIndex = (currentNetworkIndex + 1) % NETWORK_COUNT;
+                int count = profileCount();
+                if (count == 0) {
+                    break;
+                }
+                currentNetworkIndex = (currentNetworkIndex + 1) % count;
                 Serial.printf("\n[WATCHDOG]: Profile failed or timed out. Rotating tracking index to slot %d: -> Next target: %s\n", 
-                              currentNetworkIndex, myNetworks[currentNetworkIndex].ssid);
+                              currentNetworkIndex, currentSsid());
                 
                 // Update screen to explicitly show exactly what network it is fighting to connect to
                 consecutiveWanFailures = 0;
                 setNetworkDisplayHold(true);
                 updateStatusArea("Cycling Profile...", TFT_YELLOW);
-                updateMetricsArea("Targeting AP:", myNetworks[currentNetworkIndex].ssid, TFT_YELLOW, 1);
+                updateMetricsArea("Targeting AP:", currentSsid(), TFT_YELLOW, 1);
 
                 WiFi.disconnect(true, true);
                 WiFi.mode(WIFI_OFF);
@@ -490,7 +520,7 @@ void checkLiveConnection() {
                 
                 WiFi.mode(WIFI_STA);
                 delay(50);
-                WiFi.begin(myNetworks[currentNetworkIndex].ssid, myNetworks[currentNetworkIndex].password);
+                WiFi.begin(currentSsid(), currentPassword());
                 connectionTimestamp = currentMillis; // Reset timeout clock for the fresh profile target
             }
             break;
