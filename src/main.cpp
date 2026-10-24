@@ -102,8 +102,8 @@ void clockCallback() {
     }
 
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     if (!isClockLayoutDrawn) {
@@ -123,8 +123,8 @@ void maintenanceCallback() {
     }
 
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     if (timeinfo.tm_hour == 0 && !hasRunDailyMaintenance) {

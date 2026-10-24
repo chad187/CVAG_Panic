@@ -32,21 +32,54 @@ static const unsigned long CONFIRM_RETRY_MS = 60000;
 
 static volatile bool pingFinished = false;
 static volatile bool pingReached = false;
+static volatile uint32_t pingGeneration = 0;
+static volatile uint32_t pingEndGeneration = 0;
+static volatile uint32_t activePingGeneration = 0;
+static esp_ping_handle_t wanPingSession = nullptr;
+static unsigned long wanPingStartedMs = 0;
 
-static void onPingSuccess(esp_ping_handle_t, void*) {
-    pingReached = true;
+enum WanPingState { WAN_PING_IDLE, WAN_PING_PENDING, WAN_PING_UP, WAN_PING_DOWN };
+
+static void onPingSuccess(esp_ping_handle_t, void* arg) {
+    uint32_t generation = (uint32_t)(uintptr_t)arg;
+    if (generation != 0 && generation == activePingGeneration) {
+        pingReached = true;
+    }
 }
 
 static void onPingTimeout(esp_ping_handle_t, void*) {
 }
 
-static void onPingEnd(esp_ping_handle_t, void*) {
-    pingFinished = true;
+static void onPingEnd(esp_ping_handle_t, void* arg) {
+    uint32_t generation = (uint32_t)(uintptr_t)arg;
+    if (generation != 0 && generation == activePingGeneration) {
+        pingEndGeneration = generation;
+        pingFinished = true;
+    }
 }
 
-static bool pingWanOnce() {
+static void closeWanPing() {
+    if (wanPingSession == nullptr) {
+        return;
+    }
+    esp_ping_handle_t session = wanPingSession;
+    wanPingSession = nullptr;
+    activePingGeneration = 0;
+    pingGeneration++;
+    esp_ping_stop(session);
+    esp_ping_delete_session(session);
+}
+
+// The ping runs on the network stack. The button loop only starts it and reads the flag,
+// so the breathing light and clock are not frozen while the reply is outstanding.
+static bool startWanPing() {
+    if (wanPingSession != nullptr) {
+        return true;
+    }
     pingFinished = false;
     pingReached = false;
+    pingGeneration++;
+    activePingGeneration = pingGeneration;
 
     esp_ping_config_t config = ESP_PING_DEFAULT_CONFIG();
     config.count = 1;
@@ -56,6 +89,7 @@ static bool pingWanOnce() {
     config.target_addr.type = IPADDR_TYPE_V4;
 
     esp_ping_callbacks_t callbacks = {};
+    callbacks.cb_args = (void*)(uintptr_t)activePingGeneration;
     callbacks.on_ping_success = onPingSuccess;
     callbacks.on_ping_timeout = onPingTimeout;
     callbacks.on_ping_end = onPingEnd;
@@ -64,22 +98,71 @@ static bool pingWanOnce() {
     if (esp_ping_new_session(&config, &callbacks, &session) != ESP_OK) {
         return false;
     }
-
-    esp_task_wdt_reset();
     if (esp_ping_start(session) != ESP_OK) {
         esp_ping_delete_session(session);
         return false;
     }
+    wanPingSession = session;
+    wanPingStartedMs = millis();
+    return true;
+}
 
-    unsigned long started = millis();
-    while (!pingFinished && millis() - started < PING_TIMEOUT_MS + 300) {
+static WanPingState pollWanPing() {
+    if (wanPingSession == nullptr) {
+        return WAN_PING_IDLE;
+    }
+    bool finished = pingFinished && pingEndGeneration == activePingGeneration;
+    if (!finished && millis() - wanPingStartedMs < PING_TIMEOUT_MS + 500) {
+        return WAN_PING_PENDING;
+    }
+    bool reached = finished && pingReached;
+    closeWanPing();
+    return reached ? WAN_PING_UP : WAN_PING_DOWN;
+}
+
+static bool pingWanBlocking() {
+    if (!startWanPing()) {
+        return false;
+    }
+    WanPingState state = WAN_PING_PENDING;
+    while (state == WAN_PING_PENDING) {
         delay(20);
         esp_task_wdt_reset();
+        state = pollWanPing();
     }
+    return state == WAN_PING_UP;
+}
 
-    esp_ping_stop(session);
-    esp_ping_delete_session(session);
-    return pingReached;
+// False means a ping is still running and the caller should not block or start another one.
+static bool takeWanResult(bool* wanUp) {
+    WanPingState ping = pollWanPing();
+    if (ping == WAN_PING_PENDING) {
+        return false;
+    }
+    if (ping == WAN_PING_IDLE) {
+        if (!startWanPing()) {
+            *wanUp = false;
+            return true;
+        }
+        return false;
+    }
+    *wanUp = ping == WAN_PING_UP;
+    return true;
+}
+
+bool waitForNtpSync(uint32_t timeoutMs);
+
+static void ensureClock() {
+    configTzTime(TZ_INFO, NTP_SERVER);
+    struct tm timeinfo;
+    if (!getLocalTime(&timeinfo, 0)) {
+        waitForNtpSync(3000);
+    }
+}
+
+static void keepRadioAwake() {
+    // Modem sleep wakes on a beacon interval and holds the CPU long enough to freeze the fade and the clock.
+    WiFi.setSleep(false);
 }
 
 static void noteWanResult(bool reachable) {
@@ -328,6 +411,7 @@ void initialWIFI() {
     int timeoutCounter = 0;
     // 1. Loop until the hardware registers secure a link layer connection (Max 10 seconds)
     while (wifiMulti.run() != WL_CONNECTED && timeoutCounter < 20) {
+        keepRadioAwake();
         delay(500);
         esp_task_wdt_reset();
         Serial.print(".");
@@ -336,8 +420,9 @@ void initialWIFI() {
     
     // An address is enough to try an alert. One missed ping does not mean offline.
     if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+        keepRadioAwake();
         Serial.println("\n[BOOT]: Hardware link settled. Testing upstream internet access...");
-        bool wanUp = pingWanOnce();
+        bool wanUp = pingWanBlocking();
         noteWanResult(wanUp);
         connected = true;
         configTzTime(TZ_INFO, NTP_SERVER);
@@ -390,6 +475,7 @@ bool waitForNtpSync(uint32_t timeoutMs) {
 }
 
 static void beginLinkRecovery(unsigned long now) {
+    closeWanPing();
     connected = false;
     consecutiveWanFailures = 0;
     wanMissStartedMs = 0;
@@ -406,12 +492,14 @@ static void beginLinkRecovery(unsigned long now) {
     WiFi.mode(WIFI_STA);
     delay(50);
     WiFi.begin(currentSsid(), currentPassword());
+    keepRadioAwake();
 
     connectionTimestamp = now;
     netState = STATE_TRANSITION;
 }
 
 void checkLiveConnection() {
+    keepRadioAwake();
     wl_status_t currentStatus = WiFi.status();
     unsigned long currentMillis = millis();
 
@@ -422,11 +510,11 @@ void checkLiveConnection() {
         // =========================================================================
         case STATE_INITIAL_SCAN: {
             if (wifiMulti.run() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
-                bool wanUp = pingWanOnce();
+                bool wanUp = false;
+                if (takeWanResult(&wanUp)) {
                 noteWanResult(wanUp);
                 if (wanUp || !wanFailedEnough()) {
-                    configTzTime(TZ_INFO, NTP_SERVER); 
-                    waitForNtpSync(3000);
+                    ensureClock();
                     
                     connected = true;
                     String activeSSID = WiFi.SSID();
@@ -447,10 +535,12 @@ void checkLiveConnection() {
                     Serial.printf("\n[WATCHDOG]: Initial Scan Settled on SSID: %s\n", WiFi.SSID().c_str());
                     maybeConfirmAfterLinkUp();
                 }
+                }
             }
             
             if (!connected && (currentMillis - connectionTimestamp > AUTH_TIMEOUT_MS)) {
                 Serial.println("\n[WATCHDOG]: Initial multi-scan failed to verify WAN. Dropping into active profile rotation...");
+                closeWanPing();
                 netState = STATE_TRANSITION;
                 connectionTimestamp = currentMillis;
                 // Prime the first profile change instantly
@@ -458,6 +548,7 @@ void checkLiveConnection() {
                 WiFi.mode(WIFI_STA);
                 delay(50);
                 WiFi.begin(currentSsid(), currentPassword());
+                keepRadioAwake();
             }
             break;
         }
@@ -473,14 +564,16 @@ void checkLiveConnection() {
             if (currentStatus == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
                 Serial.printf("[WATCHDOG-PROBE]: Hardware link established for '%s'. Verifying WAN router route...\n", WiFi.SSID().c_str());
                 
-                bool wanUp = pingWanOnce();
+                bool wanUp = false;
+                if (!takeWanResult(&wanUp)) {
+                    break;
+                }
                 noteWanResult(wanUp);
                 if (wanUp || !wanFailedEnough()) {
                     Serial.printf("\n[WATCHDOG SUCCESS]: Profile %s has an address. WAN ping %s.\n",
                                   WiFi.SSID().c_str(), wanUp ? "ok" : "not yet failed enough to drop");
                     
-                    configTzTime(TZ_INFO, NTP_SERVER); 
-                    waitForNtpSync(3000); 
+                    ensureClock(); 
                     
                     connected = true;
                     netState = STATE_VERIFY_WAN;
@@ -509,6 +602,7 @@ void checkLiveConnection() {
                               currentNetworkIndex, currentSsid());
                 
                 // Update screen to explicitly show exactly what network it is fighting to connect to
+                closeWanPing();
                 consecutiveWanFailures = 0;
                 setNetworkDisplayHold(true);
                 updateStatusArea("Cycling Profile...", TFT_YELLOW);
@@ -521,6 +615,7 @@ void checkLiveConnection() {
                 WiFi.mode(WIFI_STA);
                 delay(50);
                 WiFi.begin(currentSsid(), currentPassword());
+                keepRadioAwake();
                 connectionTimestamp = currentMillis; // Reset timeout clock for the fresh profile target
             }
             break;
@@ -543,7 +638,10 @@ void checkLiveConnection() {
                 return;
             }
 
-            bool wanUp = pingWanOnce();
+            bool wanUp = false;
+            if (!takeWanResult(&wanUp)) {
+                return;
+            }
             noteWanResult(wanUp);
             if (wanUp) {
                 Serial.printf("[WATCHDOG]: Heartbeat verified. WAN link active on '%s'\n", WiFi.SSID().c_str());
@@ -552,9 +650,13 @@ void checkLiveConnection() {
                 Serial.printf("\n[WARNING]: '%s' failed WAN checks for %lu ms. Reconnecting.\n",
                               WiFi.SSID().c_str(), millis() - wanMissStartedMs);
                 beginLinkRecovery(currentMillis);
+                return;
             } else {
                 Serial.printf("[WATCHDOG]: WAN miss kept (%d, need %lu ms) on '%s'\n",
                               consecutiveWanFailures, WAN_DROP_AFTER_MS, WiFi.SSID().c_str());
+            }
+            if (netState == STATE_VERIFY_WAN) {
+                startWanPing();
             }
             break;
         }

@@ -5,7 +5,10 @@
 #include "arcade_manager.h"
 #include "network_manager.h" 
 #include "display_manager.h"
+#include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include "backend_target.h"
 #include <esp_task_wdt.h>
 #include "backend_ca.h"
 #include <ArduinoJson.h>
@@ -19,42 +22,14 @@ const int TEST_ALL_PIN = 0;
 const int LED_PIN = 27;
 extern Task taskLEDBlink;
 
-// Debounce Tracking Layout
-const unsigned long DEBOUNCE_DELAY = 50;
-
-static const int PANIC_QUEUE_LEN = 8;
-static volatile unsigned long panicPressMs[PANIC_QUEUE_LEN];
-static volatile uint8_t panicPressCount = 0;
-static volatile unsigned long lastPanicEdgeMs = 0;
-static portMUX_TYPE panicMux = portMUX_INITIALIZER_UNLOCKED;
-
-void IRAM_ATTR onPanicButtonEdge() {
-    unsigned long now = millis();
-    if (now - lastPanicEdgeMs < DEBOUNCE_DELAY) {
-        return;
-    }
-    lastPanicEdgeMs = now;
-    portENTER_CRITICAL_ISR(&panicMux);
-    if (panicPressCount < PANIC_QUEUE_LEN) {
-        panicPressMs[panicPressCount++] = now;
-    }
-    portEXIT_CRITICAL_ISR(&panicMux);
-}
-
-static bool takePanicPress(unsigned long& when) {
-    portENTER_CRITICAL(&panicMux);
-    if (panicPressCount == 0) {
-        portEXIT_CRITICAL(&panicMux);
-        return false;
-    }
-    when = panicPressMs[0];
-    for (uint8_t i = 1; i < panicPressCount; i++) {
-        panicPressMs[i - 1] = panicPressMs[i];
-    }
-    panicPressCount--;
-    portEXIT_CRITICAL(&panicMux);
-    return true;
-} 
+// The broadcast button must be released and pressed again. A bounce after the
+// first press is not a second tap.
+static int panicStable = HIGH;
+static int panicSeen = HIGH;
+static unsigned long panicChangedMs = 0;
+static bool panicSawRelease = false;
+static const unsigned long PANIC_DEBOUNCE_MS = 50;
+static const unsigned long DOUBLE_TAP_MIN_GAP_MS = 400; 
 
 bool lastTestButtonState = HIGH;
 bool currentTestButtonState = HIGH;
@@ -102,7 +77,7 @@ struct WdtPause {
     }
 };
 
-static void readHttpResponse(WiFiClientSecure& client, int& httpCode, String& responseBody) {
+static void readHttpResponse(Client& client, int& httpCode, String& responseBody) {
     unsigned long started = millis();
     bool headersPassed = false;
     httpCode = 0;
@@ -200,18 +175,14 @@ static void postAlert(const AlertView& view) {
     updateMetricsArea(view.busyLabel, view.busyValue, view.busyColor, view.busySize);
 
 #if defined(BACKEND_BASE_URL)
-    String baseUrl = String(BACKEND_BASE_URL);
-    int hostStart = baseUrl.indexOf("://") + 3;
-    int hostEnd = baseUrl.indexOf('/', hostStart);
-    if (hostStart < 3 || hostEnd <= hostStart) {
+    BackendTarget target;
+    if (!parseBackendTarget("/trigger/", target)) {
         updateMetricsArea(view.resultLabel, "FAIL", TFT_RED, view.resultSize);
         triggerLedPattern(3000, 127, 2);
         Serial.println("[ERROR]: BACKEND_BASE_URL has no host path.");
         return;
     }
 
-    String host = baseUrl.substring(hostStart, hostEnd);
-    String path = baseUrl.substring(hostEnd) + "/trigger/";
     String jsonPayload = String("{\"action\":\"") + view.action + "\"}";
     bool accepted = false;
 
@@ -222,39 +193,50 @@ static void postAlert(const AlertView& view) {
                 updateMetricsArea(view.busyLabel, "RETRY", TFT_YELLOW, view.busySize);
             }
 
+            WiFiClient plainClient;
             WiFiClientSecure secureClient;
-            secureClient.setCACert(BACKEND_ROOT_CA);
-            secureClient.setHandshakeTimeout(3);
-            secureClient.setTimeout(3);
+            Client* client = &plainClient;
+            if (target.tls) {
+                secureClient.setCACert(BACKEND_ROOT_CA);
+                secureClient.setHandshakeTimeout(3);
+                secureClient.setTimeout(3);
+                client = &secureClient;
+            }
 
             Serial.print("[CLOUD DATA]: Connecting to ");
-            Serial.print(host);
-            Serial.println(":443...");
+            Serial.print(target.host);
+            Serial.print(":");
+            Serial.println(target.port);
 
-            if (!secureClient.connect(host.c_str(), 443, (int32_t)ALERT_IO_TIMEOUT_MS)) {
+            bool opened = target.tls
+                ? secureClient.connect(target.host.c_str(), target.port, (int32_t)ALERT_IO_TIMEOUT_MS)
+                : plainClient.connect(target.host.c_str(), target.port, (int32_t)ALERT_IO_TIMEOUT_MS);
+            if (!opened) {
                 Serial.println("[ERROR]: Direct socket connection to server failed!");
-                secureClient.stop();
+                client->stop();
                 continue;
             }
 
-            secureClient.print("POST " + path + " HTTP/1.1\r\n");
-            secureClient.print("Host: " + host + "\r\n");
-            secureClient.print("Connection: close\r\n");
-            secureClient.print("Content-Type: application/json\r\n");
+            String hostHeader = backendHostHeader(target);
+            client->print("POST " + target.path + " HTTP/1.1\r\n");
+            client->print("Host: " + hostHeader + "\r\n");
+            client->print("Connection: close\r\n");
+            client->print("Content-Type: application/json\r\n");
             const char* apiPassword = credentialApiPassword();
             if (apiPassword[0] == '\0') {
                 Serial.println("[ERROR]: No API password is stored.");
-                secureClient.stop();
+                client->stop();
                 continue;
             }
-            secureClient.print("Authorization: Bearer " + String(apiPassword) + "\r\n");
-            secureClient.print("Content-Length: " + String(jsonPayload.length()) + "\r\n\r\n");
-            secureClient.print(jsonPayload);
+            client->print("Authorization: Bearer " + String(apiPassword) + "\r\n");
+            client->print("X-Node-Id: " + WiFi.macAddress() + "\r\n");
+            client->print("Content-Length: " + String(jsonPayload.length()) + "\r\n\r\n");
+            client->print(jsonPayload);
 
             int httpCode = 0;
             String responseBody;
-            readHttpResponse(secureClient, httpCode, responseBody);
-            secureClient.stop();
+            readHttpResponse(*client, httpCode, responseBody);
+            client->stop();
 
             Serial.print("[RESPONSE]: HTTP Code: ");
             Serial.println(httpCode);
@@ -307,20 +289,50 @@ void executeTestAllButtonAction() {
 }
 
 
+static bool pollPanicButton() {
+    int reading = digitalRead(BUTTON_PIN);
+    if (reading != panicSeen) {
+        panicSeen = reading;
+        panicChangedMs = millis();
+    }
+    if (reading == panicStable || (millis() - panicChangedMs) <= PANIC_DEBOUNCE_MS) {
+        return false;
+    }
+
+    panicStable = reading;
+    if (panicStable == HIGH) {
+        if (doubleTapPending) {
+            panicSawRelease = true;
+        }
+        return false;
+    }
+
+    unsigned long now = millis();
+    bool distinct = !doubleTapPending
+        || (panicSawRelease && (now - doubleTapArmTime) >= DOUBLE_TAP_MIN_GAP_MS);
+    if (!distinct) {
+        return false;
+    }
+    return true;
+}
+
 void initArcadeHardware() {
     pinMode(BUTTON_PIN, INPUT_PULLUP); 
     pinMode(TEST_ONE_PIN, INPUT_PULLUP);
     pinMode(TEST_ALL_PIN, INPUT_PULLUP);
-    attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), onPanicButtonEdge, FALLING);
+    panicStable = digitalRead(BUTTON_PIN);
+    panicSeen = panicStable;
+    panicChangedMs = millis();
     ledcSetup(0, 5000, 8);         
     ledcAttachPin(LED_PIN, 0);      
 }
 
 bool handleArcadeLogic() {
     if (!clockHasComeOn()) {
-        unsigned long ignoredPress = 0;
-        while (takePanicPress(ignoredPress)) {
-        }
+        panicStable = digitalRead(BUTTON_PIN);
+        panicSeen = panicStable;
+        panicChangedMs = millis();
+        panicSawRelease = false;
         bool testOneLevel = digitalRead(TEST_ONE_PIN);
         bool testAllLevel = digitalRead(TEST_ALL_PIN);
         lastTestButtonState = testOneLevel;
@@ -334,6 +346,7 @@ bool handleArcadeLogic() {
     if (doubleTapPending && (millis() - doubleTapArmTime) > DOUBLE_TAP_WINDOW_MS) {
         Serial.println("[HARDWARE]: Double-tap confirmation timed out.");
         doubleTapPending = false;
+        panicSawRelease = false;
         drawHeader("STANDBY", TFT_BLUE);
         updateMetricsArea("Broadcast", "READY", TFT_BLUE, 3);
     }
@@ -387,9 +400,7 @@ bool handleArcadeLogic() {
     lastTestButtonState = altReading;
     lastTestAllButtonState = testAllReading;
 
-    unsigned long queuedPress = 0;
-    if (takePanicPress(queuedPress)) {
-        (void)queuedPress;
+    if (pollPanicButton()) {
         dimmed = false;
         setDimming(100);
         taskLEDBlink.disable();
@@ -409,13 +420,15 @@ void setButtonLED(int brightness) {
 void onDebounceComplete() {
     Serial.println("\n[HARDWARE]: Button press stabilized and validated.");
 
-    if (doubleTapPending && (millis() - doubleTapArmTime) <= DOUBLE_TAP_WINDOW_MS) {
+    if (doubleTapPending && panicSawRelease && (millis() - doubleTapArmTime) <= DOUBLE_TAP_WINDOW_MS) {
         Serial.println("[HARDWARE]: Second tap confirmed. Executing action.");
         doubleTapPending = false;
+        panicSawRelease = false;
         executeButtonAction();
     } else {
         doubleTapPending = true;
         doubleTapArmTime = millis();
+        panicSawRelease = false;
         Serial.println("[HARDWARE]: First tap received. Waiting for second tap.");
         drawHeader("CONFIRM", TFT_ORANGE);
         updateMetricsArea("Tap Again", "TO SEND", TFT_ORANGE, 2);

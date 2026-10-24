@@ -89,8 +89,8 @@ void updateMetricsArea(const char* label, String value, uint16_t color, int size
 
 void updateLiveClock() {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     char timeString[9];  

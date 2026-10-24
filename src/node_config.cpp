@@ -4,7 +4,9 @@
 #include "credential_store.h"
 #include <ArduinoJson.h>
 #include <WiFi.h>
+#include <WiFiClient.h>
 #include <WiFiClientSecure.h>
+#include "backend_target.h"
 #include <esp_task_wdt.h>
 
 static unsigned long lastConfigPullMs = 0;
@@ -65,7 +67,17 @@ static bool applyPayload(JsonDocument& doc) {
         }
     }
     saveCredentials(passwordToStore, count, ssids, passwords, revision);
+    if (passwordChanged) {
+        Serial.println("[CONFIG]: API password updated.");
+    }
     return true;
+}
+
+static void logStoredWifi() {
+    Serial.printf("[CONFIG]: Stored Wi-Fi profiles: %d\n", credentialCount());
+    for (int i = 0; i < credentialCount(); i++) {
+        Serial.printf("[CONFIG]:  %d %s\n", i + 1, credentialSsid(i));
+    }
 }
 
 void pullNodeConfig() {
@@ -79,47 +91,52 @@ void pullNodeConfig() {
         return;
     }
 
-    String baseUrl = String(BACKEND_BASE_URL);
-    int hostStart = baseUrl.indexOf("://") + 3;
-    int hostEnd = baseUrl.indexOf('/', hostStart);
-    if (hostStart < 3 || hostEnd <= hostStart) {
+    BackendTarget target;
+    if (!parseBackendTarget("/node/config/", target)) {
         Serial.println("[CONFIG]: BACKEND_BASE_URL has no host path.");
         return;
     }
-    String host = baseUrl.substring(hostStart, hostEnd);
-    String path = baseUrl.substring(hostEnd) + "/node/config/";
 
-    WiFiClientSecure client;
-    client.setCACert(BACKEND_ROOT_CA);
-    client.setHandshakeTimeout(8);
-    client.setTimeout(8);
+    WiFiClient plainClient;
+    WiFiClientSecure secureClient;
+    Client* client = &plainClient;
+    if (target.tls) {
+        secureClient.setCACert(BACKEND_ROOT_CA);
+        secureClient.setHandshakeTimeout(8);
+        secureClient.setTimeout(8);
+        client = &secureClient;
+    }
 
     bool connectedToHost = false;
     {
         WdtPause pauseWdt;
-        connectedToHost = client.connect(host.c_str(), 443, CONFIG_TIMEOUT_MS);
+        connectedToHost = target.tls
+            ? secureClient.connect(target.host.c_str(), target.port, CONFIG_TIMEOUT_MS)
+            : plainClient.connect(target.host.c_str(), target.port, CONFIG_TIMEOUT_MS);
     }
     if (!connectedToHost) {
-        Serial.println("[CONFIG]: Credential endpoint connection failed.");
-        client.stop();
+        Serial.printf("[CONFIG]: Credential endpoint connection failed (%s:%u).\n", target.host.c_str(), target.port);
+        client->stop();
         return;
     }
 
     String revision = String(credentialRevision());
-    client.print("GET " + path + " HTTP/1.1\r\n");
-    client.print("Host: " + host + "\r\n");
-    client.print("Connection: close\r\n");
-    client.print("Authorization: Bearer " + String(token) + "\r\n");
-    client.print("X-Node-Id: " + WiFi.macAddress() + "\r\n");
-    client.print("X-Config-Revision: " + revision + "\r\n\r\n");
+    String hostHeader = backendHostHeader(target);
+    client->print("GET " + target.path + " HTTP/1.1\r\n");
+    client->print("Host: " + hostHeader + "\r\n");
+    client->print("Connection: close\r\n");
+    client->print("Authorization: Bearer " + String(token) + "\r\n");
+    client->print("X-Node-Id: " + WiFi.macAddress() + "\r\n");
+    client->print("X-Config-Revision: " + revision + "\r\n");
+    client->print("X-Firmware-Version: " + String(CURRENT_VERSION) + "\r\n\r\n");
 
     unsigned long started = millis();
     bool headersPassed = false;
     int httpCode = 0;
     String body;
     while (millis() - started < CONFIG_TIMEOUT_MS) {
-        while (client.available()) {
-            String line = client.readStringUntil('\n');
+        while (client->available()) {
+            String line = client->readStringUntil('\n');
             line.trim();
             if (!headersPassed) {
                 if (line.startsWith("HTTP/1.")) {
@@ -135,13 +152,13 @@ void pullNodeConfig() {
                 body += line;
             }
         }
-        if (!client.connected() && !client.available()) {
+        if (!client->connected() && !client->available()) {
             break;
         }
         delay(10);
         esp_task_wdt_reset();
     }
-    client.stop();
+    client->stop();
 
     if (httpCode < 200 || httpCode >= 300) {
         Serial.printf("[CONFIG]: Credential endpoint returned %d\n", httpCode);
@@ -158,6 +175,7 @@ void pullNodeConfig() {
     } else {
         Serial.println("[CONFIG]: Credentials already match the portal.");
     }
+    logStoredWifi();
 }
 
 void serviceNodeConfig() {
