@@ -4,8 +4,18 @@
 
 void initialWIFI();
 void syncClockWithNTP();
-bool checkForFirmwareUpdates();
+
+enum FirmwareCheckResult {
+    FIRMWARE_CHECK_FAILED,
+    FIRMWARE_UP_TO_DATE,
+    FIRMWARE_UPDATE_AVAILABLE
+};
+
+FirmwareCheckResult checkForFirmwareUpdates();
 void performOTAUpdate();
 void checkLiveConnection();
+void noteFirmwareBoot();
+void confirmRunningFirmware();
+void rollbackIfUnconfirmed();
 
 #endif

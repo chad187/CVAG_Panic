@@ -5,6 +5,8 @@
 #include "display_manager.h"
 #include "network_manager.h"
 #include "arcade_manager.h"
+#include "credential_store.h"
+#include "node_config.h"
 
 Scheduler runner; 
 bool isClockLayoutDrawn = false; 
@@ -34,7 +36,7 @@ void ledBlinkCallback();
 Task taskUpdateClock(1000, TASK_FOREVER, &clockCallback);
 // 2. Maintenance runs every 5 minutees (300000ms) forever
 Task taskMaintenance(300000, TASK_FOREVER, &maintenanceCallback);
-Task taskNetworkWatchdog(10000, TASK_FOREVER, &connectionWatchdogCallback);
+Task taskNetworkWatchdog(5000, TASK_FOREVER, &connectionWatchdogCallback);
 Task taskDimming(0, TASK_ONCE, &dimmingCallback);
 Task taskArcadeWatcher(20, TASK_FOREVER, &arcadeLogicCallback);
 Task taskLEDBlink(20, TASK_FOREVER, &ledBlinkCallback);
@@ -95,15 +97,20 @@ void triggerLedPattern(unsigned long speedMs, int maxBrightness, int count) {
 }
 
 void clockCallback() {
+    if (networkDisplayHeld()) {
+        return;
+    }
+
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     if (!isClockLayoutDrawn) {
         clearScreen();
         drawMainClockLayout(); 
         isClockLayoutDrawn = true;
+        noteClockDisplayed();
     }
 
     updateLiveClock();
@@ -111,9 +118,13 @@ void clockCallback() {
 
 // This runs automatically in the background every 5 minutes
 void maintenanceCallback() {
+    if (connected) {
+        serviceNodeConfig();
+    }
+
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     if (timeinfo.tm_hour == 0 && !hasRunDailyMaintenance) {
@@ -122,10 +133,11 @@ void maintenanceCallback() {
 
         if (!connected) {
             Serial.println("System offline at midnight. Forcing a hard network stack rebuild...");
-            checkLiveConnection(); // Force a hard, blocking 10-second re-scan and reconnection attempt
+            checkLiveConnection(); // One watchdog step; the button stays latched if this blocks
         } else {
             syncClockWithNTP();
-            if (checkForFirmwareUpdates()) { // This now correctly runs your GitHub JSON check
+            if (checkForFirmwareUpdates() == FIRMWARE_UPDATE_AVAILABLE) {
+                confirmRunningFirmware();
                 Serial.println("Critical updates validated. Suspending app threads for storage modifications...");
                 
                 // Suspend operations for flash stability
@@ -168,10 +180,20 @@ void setup() {
     
     initDisplay();
     initArcadeHardware();
+    loadCredentials();
+    seedCredentialsFromBuild();
+    noteFirmwareBoot();
     drawHeader("STARTING UP...", TFT_DARKGREY); 
     
     initialWIFI();
-    if (connected && checkForFirmwareUpdates()) { // This now correctly runs your GitHub JSON check
+    if (connected) {
+        pullNodeConfig();
+    }
+    FirmwareCheckResult bootCheck = connected ? checkForFirmwareUpdates() : FIRMWARE_CHECK_FAILED;
+    if (bootCheck != FIRMWARE_CHECK_FAILED) {
+        confirmRunningFirmware();
+    }
+    if (bootCheck == FIRMWARE_UPDATE_AVAILABLE) {
         Serial.println(">>> New firmware validated at boot. Launching installation sequence! <<<");
         
         performOTAUpdate(); 
@@ -199,6 +221,7 @@ void setup() {
 void loop() {
     // Both tasks are tracked and executed asynchronously right here without interfering with each other
     runner.execute();
+    rollbackIfUnconfirmed();
     if (!dimmed) {
         dimmed = true;
         taskDimming.restartDelayed(10000);

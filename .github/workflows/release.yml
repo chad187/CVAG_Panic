@@ -45,21 +45,18 @@ jobs:
         env:
           WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
-          YARD_ID: ${{ secrets.YARD_ID }}
           API_PASSWORD: ${{ secrets.API_PASSWORD }}
         run: |
             python - <<'PY'
             import os
             w = os.environ.get('WIFI_PROFILES','')
             b = os.environ.get('BACKEND_BASE_URL','')
-            y = os.environ.get('YARD_ID','')
             p = os.environ.get('API_PASSWORD','')
             with open('private_env.ini','w') as f:
                 f.write('[extra_build_flags]\n')
                 f.write('private_flags = \n')
                 f.write(f'    -D WIFI_PROFILES={w}\n')
                 f.write(f'    -D BACKEND_BASE_URL="{b}"\n')
-                f.write(f'    -D YARD_ID="{y}"\n')
                 f.write(f'    -D API_PASSWORD="{p}"\n')
             print('private_env.ini generated successfully')
             PY

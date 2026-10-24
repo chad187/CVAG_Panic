@@ -6,6 +6,28 @@
 
 TFT_eSPI tft = TFT_eSPI();
 
+static bool networkHoldsDisplay = false;
+static bool clockHasComeOnFlag = false;
+
+static int glyphWidth(int textSize) {
+    return 6 * textSize;
+}
+
+static String fitToWidth(const String& value, int textSize, int maxPixels) {
+    int cell = glyphWidth(textSize);
+    if (cell <= 0) {
+        return value;
+    }
+    int maxChars = maxPixels / cell;
+    if ((int)value.length() <= maxChars) {
+        return value;
+    }
+    if (maxChars <= 1) {
+        return value.substring(0, maxChars);
+    }
+    return value.substring(0, maxChars - 1) + "~";
+}
+
 void initDisplay() {
     tft.init();
     tft.setRotation(1);
@@ -26,26 +48,49 @@ void drawHeader(const char* title, uint16_t bgColor) {
 
 void updateStatusArea(const char* status, uint16_t color) {
     tft.fillRect(0, 30, 240, 20, TFT_BLACK);
-    tft.setTextColor(color);
+    tft.setTextColor(color, TFT_BLACK);
     tft.setTextSize(1);
-    tft.drawString(status, 10, 32);
+    tft.drawString(fitToWidth(status, 1, 220), 10, 32);
 }
 
 void updateMetricsArea(const char* label, String value, uint16_t color, int size) {
-    tft.fillRect(0, 60, 240, 50, TFT_BLACK);
-    tft.setTextColor(TFT_WHITE);
-    tft.setTextSize(size);
-    tft.drawString(label, 10, 62);
-    
-    tft.setTextColor(color);
-    tft.setTextSize(size+1);
-    tft.drawString(value, 10, 80);
+    const int contentTop = 54;
+    const int contentBottom = 134;
+    const int gap = 6;
+    const int maxPixels = 220;
+
+    int labelSize = constrain(size, 1, 3);
+    int valueSize = labelSize + 1;
+    while (valueSize > 1 && (int)value.length() * glyphWidth(valueSize) > maxPixels) {
+        valueSize--;
+    }
+
+    String shownLabel = fitToWidth(label, labelSize, maxPixels);
+    String shownValue = fitToWidth(value, valueSize, maxPixels);
+    int labelH = 8 * labelSize;
+    int valueH = 8 * valueSize;
+    int blockH = labelH + gap + valueH;
+    int available = contentBottom - contentTop;
+    int y = contentTop;
+    if (blockH < available) {
+        y = contentTop + (available - blockH) / 2;
+    }
+
+    // Leave the header (y 0-25) and the status line (y 30-50) in place.
+    tft.fillRect(0, 52, 240, 83, TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    tft.setTextSize(labelSize);
+    tft.drawString(shownLabel, 10, y);
+
+    tft.setTextColor(color, TFT_BLACK);
+    tft.setTextSize(valueSize);
+    tft.drawString(shownValue, 10, y + labelH + gap);
 }
 
 void updateLiveClock() {
     struct tm timeinfo;
-    if (!getLocalTime(&timeinfo)) {
-        return; 
+    if (!getLocalTime(&timeinfo, 0)) {
+        return;
     }
 
     char timeString[9];  
@@ -82,6 +127,22 @@ void drawMainClockLayout() {
     
     // Draw a subtle horizontal dividing line right under your green header space
     tft.drawFastHLine(0, 26, 240, TFT_DARKGREY);
+}
+
+void setNetworkDisplayHold(bool hold) {
+    networkHoldsDisplay = hold;
+}
+
+bool networkDisplayHeld() {
+    return networkHoldsDisplay;
+}
+
+void noteClockDisplayed() {
+    clockHasComeOnFlag = true;
+}
+
+bool clockHasComeOn() {
+    return clockHasComeOnFlag;
 }
 
 void setDimming(int percentage) {
