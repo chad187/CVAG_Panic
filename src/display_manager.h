@@ -16,4 +16,12 @@ void clearScreen();
 void drawMainClockLayout();
 void setDimming(int percentage);
 
+// While true, the clock task leaves the panel alone so a status view can own it.
+void setNetworkDisplayHold(bool hold);
+bool networkDisplayHeld();
+
+// Presses are ignored until the clock has been drawn once this boot.
+void noteClockDisplayed();
+bool clockHasComeOn();
+
 #endif

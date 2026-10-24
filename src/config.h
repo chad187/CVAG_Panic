@@ -2,14 +2,13 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-#define CURRENT_VERSION "1.0.7"
-
-#ifndef BACKEND_BASE_URL
-    #define BACKEND_BASE_URL "http://localhost:8081/api/yard"
+// Set from version.json by scripts/inject_version.py. That file is the only version to bump.
+#ifndef CURRENT_VERSION
+#error "CURRENT_VERSION is missing. Build with PlatformIO so version.json is compiled in."
 #endif
 
-#ifndef YARD_ID
-    #define YARD_ID "CV_AG_GRIND:Oakdale_1"
+#ifndef BACKEND_BASE_URL
+    #define BACKEND_BASE_URL "https://cvag.rocks/alerts/api"
 #endif
 
 #ifndef API_PASSWORD
@@ -42,8 +41,5 @@ const int NETWORK_COUNT = sizeof(myNetworks) / sizeof(myNetworks[0]);
 
 // The raw URL pointing to your repository's version tracking manifest file
 #define CONFIG_URL "https://raw.githubusercontent.com/chad187/CVAG_Panic/release/version.json"
-
-// The direct asset link where your compiled firmware binary will sit inside GitHub Releases
-#define FIRMWARE_URL "https://github.com/chad187/CVAG_Panic/releases/latest/download/firmware.bin"
 
 #endif
