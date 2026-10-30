@@ -41,23 +41,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install platformio
 
+      # Wi-Fi profiles and the API password stay on the device and on a local
+      # private_env.ini. Do not compile them into the published binary.
       - name: Generate private_env.ini from secrets
         env:
-          WIFI_PROFILES: ${{ secrets.WIFI_PROFILES }}
           BACKEND_BASE_URL: ${{ secrets.BACKEND_BASE_URL }}
-          API_PASSWORD: ${{ secrets.API_PASSWORD }}
         run: |
             python - <<'PY'
             import os
-            w = os.environ.get('WIFI_PROFILES','')
             b = os.environ.get('BACKEND_BASE_URL','')
-            p = os.environ.get('API_PASSWORD','')
             with open('private_env.ini','w') as f:
                 f.write('[extra_build_flags]\n')
                 f.write('private_flags = \n')
-                f.write(f'    -D WIFI_PROFILES={w}\n')
                 f.write(f'    -D BACKEND_BASE_URL="{b}"\n')
-                f.write(f'    -D API_PASSWORD="{p}"\n')
             print('private_env.ini generated successfully')
             PY
 
